@@ -11,13 +11,32 @@ WrightFisherGeneration(popSize, p)
             count ← count + 1
     return count / numCopies
 
-SimulateDrift(popSize, p0, numGens)
+SimulateDrift(popSizes, p0)
     freqs ← [p0]
     p ← p0
-    for numGens generations
+    for every popSize in popSizes
         p ← WrightFisherGeneration(popSize, p)
         append p to freqs
     return freqs
+
+MakeCrashHistory(normalSize, crashSize, gensBefore, gensCrash, gensAfter)
+    return gensBefore copies of normalSize, then gensCrash copies of crashSize,
+           then gensAfter copies of normalSize
+
+MakeGrowthHistory(startSize, endSize, gensBefore, gensGrowth, gensAfter)
+    sizes ← gensBefore copies of startSize
+    for t ← 1 to gensGrowth
+        append startSize * (endSize / startSize)^(t / gensGrowth), rounded
+    append gensAfter copies of endSize
+    return sizes
+
+AverageHeterozygosity(popSizes, p0, numTrials)
+    totals ← list of zeros, one per generation
+    for numTrials total trials
+        freqs ← SimulateDrift(popSizes, p0)
+        for every generation t
+            totals[t] ← totals[t] + 2 * freqs[t] * (1 - freqs[t])
+    return totals / numTrials
 
 RunUntilFixedOrLost(popSize, p0)
     p ← p0
@@ -58,22 +77,89 @@ def wright_fisher_generation(pop_size: int, p: float) -> float:
     return count / num_copies
 
 
-def simulate_drift(pop_size: int, p0: float, num_gens: int) -> list[float]:
+def simulate_drift(pop_sizes: list[int], p0: float) -> list[float]:
     """
-    Simulates genetic drift for a fixed number of generations.
+    Simulates genetic drift in a population whose size can change every generation.
     Parameters:
-    - pop_size (int): The number of diploid individuals N.
+    - pop_sizes (list[int]): The number of diploid individuals in each generation;
+      pop_sizes[t] is the size of generation t + 1, so the list length is the
+      number of generations simulated.
     - p0 (float): The starting allele frequency.
-    - num_gens (int): The number of generations to simulate.
     Returns:
-    - list[float]: The allele frequency in each generation, starting with p0.
+    - list[float]: The allele frequency in each generation, starting with p0,
+      so its length is len(pop_sizes) + 1.
     """
     freqs = [p0]
     p = p0
-    for _ in range(num_gens):
+    for pop_size in pop_sizes:
         p = wright_fisher_generation(pop_size, p)
         freqs.append(p)
     return freqs
+
+
+def make_crash_history(normal_size: int, crash_size: int, gens_before: int,
+                       gens_crash: int, gens_after: int) -> list[int]:
+    """
+    Builds a population size history with a sudden crash and a sudden recovery.
+    Parameters:
+    - normal_size (int): The population size before and after the crash.
+    - crash_size (int): The population size during the crash.
+    - gens_before (int): The number of generations before the crash.
+    - gens_crash (int): The number of generations the crash lasts.
+    - gens_after (int): The number of generations after the recovery.
+    Returns:
+    - list[int]: One population size per generation.
+    """
+    if normal_size <= 0 or crash_size <= 0:
+        raise ValueError("Population sizes must be positive integers.")
+
+    return [normal_size] * gens_before + [crash_size] * gens_crash + [normal_size] * gens_after
+
+
+def make_growth_history(start_size: int, end_size: int, gens_before: int,
+                        gens_growth: int, gens_after: int) -> list[int]:
+    """
+    Builds a population size history with exponential growth from start_size to end_size.
+    Parameters:
+    - start_size (int): The population size before growth.
+    - end_size (int): The population size after growth.
+    - gens_before (int): The number of generations before growth starts.
+    - gens_growth (int): The number of generations over which the population grows.
+    - gens_after (int): The number of generations after growth ends.
+    Returns:
+    - list[int]: One population size per generation.
+    """
+    if start_size <= 0 or end_size <= 0:
+        raise ValueError("Population sizes must be positive integers.")
+    if gens_growth <= 0:
+        raise ValueError("gens_growth must be a positive integer.")
+
+    sizes = [start_size] * gens_before
+    for t in range(1, gens_growth + 1):
+        sizes.append(round(start_size * (end_size / start_size) ** (t / gens_growth)))
+    sizes += [end_size] * gens_after
+    return sizes
+
+
+def average_heterozygosity(pop_sizes: list[int], p0: float, num_trials: int) -> list[float]:
+    """
+    Averages the heterozygosity 2p(1 - p) over many simulations, generation by generation.
+    Parameters:
+    - pop_sizes (list[int]): The number of diploid individuals in each generation.
+    - p0 (float): The starting allele frequency.
+    - num_trials (int): The number of independent simulations to average over.
+    Returns:
+    - list[float]: The average heterozygosity in each generation, starting with generation 0.
+    """
+    if num_trials <= 0:
+        raise ValueError("num_trials must be a positive integer.")
+
+    totals = [0.0] * (len(pop_sizes) + 1)
+    for _ in range(num_trials):
+        freqs = simulate_drift(pop_sizes, p0)
+        for t, p in enumerate(freqs):
+            totals[t] += 2 * p * (1 - p)
+    return [total / num_trials for total in totals]
 
 
 def run_until_fixed_or_lost(pop_size: int, p0: float) -> bool:
@@ -115,9 +201,22 @@ def main():
     random.seed(120)
 
     # One trajectory: watch the frequency wander.
-    freqs = simulate_drift(pop_size=50, p0=0.5, num_gens=20)
+    freqs = simulate_drift(pop_sizes=[50] * 20, p0=0.5)
     print("Frequency over 20 generations (N = 50):")
     print(" ".join(f"{p:.2f}" for p in freqs))
+
+    # Steady population vs. one that crashes from 500 to 10 for 10 generations.
+    steady = [500] * 60
+    crash = make_crash_history(normal_size=500, crash_size=10,
+                               gens_before=20, gens_crash=10, gens_after=30)
+    steady_h = average_heterozygosity(steady, p0=0.5, num_trials=200)
+    crash_h = average_heterozygosity(crash, p0=0.5, num_trials=200)
+    print()
+    print("Average heterozygosity 2p(1-p), 200 runs each (starts at 0.500):")
+    print(f"{'gen':>4} {'N (crash run)':>14} {'steady':>8} {'crash':>8}")
+    for t in [0, 10, 20, 25, 30, 40, 60]:
+        size = crash[t - 1] if t > 0 else crash[0]
+        print(f"{t:>4} {size:>14} {steady_h[t]:>8.3f} {crash_h[t]:>8.3f}")
 
     # Sanity check from the proposal: P(fix) should equal p0.
     print()
