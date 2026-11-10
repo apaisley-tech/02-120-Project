@@ -5,7 +5,6 @@ Run with: python3 -m unittest -v test_wright_fisher
 """
 
 import math
-import random
 import unittest
 
 from wright_fisher import (
@@ -14,13 +13,14 @@ from wright_fisher import (
     make_crash_history,
     make_growth_history,
     run_until_fixed_or_lost,
+    set_seed,
     simulate_drift,
 )
 
 
 class TestFixationProbability(unittest.TestCase):
     def setUp(self):
-        random.seed(120)
+        set_seed(120)
 
     def test_fixation_probability_equals_starting_frequency(self):
         """
@@ -49,7 +49,7 @@ class TestFixationProbability(unittest.TestCase):
 
 class TestChangingPopulationSize(unittest.TestCase):
     def setUp(self):
-        random.seed(120)
+        set_seed(120)
 
     def test_simulate_drift_returns_one_frequency_per_generation_plus_start(self):
         freqs = simulate_drift([100, 5, 100], p0=0.3)

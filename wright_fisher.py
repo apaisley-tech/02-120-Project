@@ -5,10 +5,7 @@ Pseudocode
 
 WrightFisherGeneration(popSize, p)
     numCopies ← 2 * popSize
-    count ← 0
-    for numCopies total draws
-        if RandFloat() < p
-            count ← count + 1
+    count ← RandBinomial(numCopies, p)    (same as counting numCopies draws with RandFloat() < p)
     return count / numCopies
 
 SimulateDrift(popSizes, p0)
@@ -52,7 +49,19 @@ EstimateFixationProbability(popSize, p0, numTrials)
     return count / numTrials
 """
 
-import random
+import numpy as np
+
+rng = np.random.default_rng()
+
+
+def set_seed(seed: int) -> None:
+    """
+    Resets the random number generator so that simulations are reproducible.
+    Parameters:
+    - seed (int): The seed for the new generator.
+    """
+    global rng
+    rng = np.random.default_rng(seed)
 
 
 def wright_fisher_generation(pop_size: int, p: float) -> float:
@@ -69,11 +78,10 @@ def wright_fisher_generation(pop_size: int, p: float) -> float:
     if p < 0 or p > 1:
         raise ValueError("p must be between 0 and 1.")
 
+    # Each of the 2N copies is independently the allele with probability p,
+    # so the count is one binomial draw instead of a loop of 2N draws.
     num_copies = 2 * pop_size
-    count = 0
-    for _ in range(num_copies):
-        if random.random() < p:
-            count += 1
+    count = int(rng.binomial(num_copies, p))
     return count / num_copies
 
 
@@ -198,7 +206,7 @@ def estimate_fixation_probability(pop_size: int, p0: float, num_trials: int) -> 
 
 
 def main():
-    random.seed(120)
+    set_seed(120)
 
     # One trajectory: watch the frequency wander.
     freqs = simulate_drift(pop_sizes=[50] * 20, p0=0.5)
