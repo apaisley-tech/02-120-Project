@@ -157,8 +157,9 @@ def average_sample_stats(pop_sizes: list[int], mu: float, sample_size: int,
     - record_gens (list[int]): The generations (1 to len(pop_sizes)) to sample at.
     Returns:
     - dict[str, list[float]]: Keys "S", "pi", "theta_w" and "D", each with one
-      average per entry of record_gens. Runs where D is undefined are left out
-      of the D average.
+      average per entry of record_gens, and keys "S_se", "pi_se", "theta_w_se"
+      and "D_se" with the standard error of each average. Runs where D is
+      undefined are left out of the D average.
     """
     if num_trials <= 0:
         raise ValueError("num_trials must be a positive integer.")
@@ -179,8 +180,11 @@ def average_sample_stats(pop_sizes: list[int], mu: float, sample_size: int,
                 stats["theta_w"][trial, i] = watterson_theta(counts, sample_size)
                 stats["D"][trial, i] = tajimas_d(counts, sample_size)
 
-    averages = {name: list(np.mean(values, axis=0)) for name, values in stats.items()}
-    averages["D"] = list(np.nanmean(stats["D"], axis=0))
+    averages = {}
+    for name, values in stats.items():
+        num_defined = np.sum(~np.isnan(values), axis=0)
+        averages[name] = list(np.nanmean(values, axis=0))
+        averages[name + "_se"] = list(np.nanstd(values, axis=0, ddof=1) / np.sqrt(num_defined))
     return averages
 
 
