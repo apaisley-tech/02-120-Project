@@ -31,6 +31,21 @@ single seeds, lines are averages; times are also saved in `figures/recovery_vs_c
   600–700 generations for D and 950 for π for crashes to N = 15 or less.
 - π takes longer to recover than D for every crash size that π can detect.
 
+Is a short, severe crash worse than a long, mild one? Crashes to N = 40, 20 and 10 lasting
+5, 10, 20 or 40 generations, plotted against crash strength, length / (2 × crash size)
+(times also saved in `figures/recovery_vs_crash_strength.csv`):
+
+![Recovery time against crash strength for three crash depths](figures/recovery_vs_crash_strength.png)
+
+- Crashes with the same strength take about the same time to recover from, whatever their
+  depth. For example, at strength 0.5 (N = 40 for 40 generations, N = 20 for 20, or N = 10
+  for 10), D recovers after 520, 506 and 496 generations, and π after 708, 766 and 696.
+- This matches theory: each generation at size N multiplies heterozygosity by (1 − 1/2N),
+  so a crash of length L at size N_c removes about the same variation whenever L / 2N_c
+  is the same.
+- So what matters is the strength of the crash, not its depth or length alone: a brief,
+  severe crash and a long, mild one of equal strength leave the same mark.
+
 Twenty generations of rapid growth from N = 200:
 
 ![Tajima's D and π after growth of different sizes](figures/growth_recovery.png)
@@ -57,10 +72,11 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 
 | Command | What it does | Time |
 |---|---|---|
-| `.venv/bin/python plots.py` | Makes all three figures in `figures/` | ~4 min |
+| `.venv/bin/python plots.py` | Makes all four figures in `figures/` | ~8 min |
 | `.venv/bin/python plots.py crash` | Only the crash figure | ~15 s |
 | `.venv/bin/python plots.py growth` | Only the growth figure | ~50 s |
-| `.venv/bin/python plots.py severity` | Only the recovery-time figure, plus its CSV | ~3 min |
+| `.venv/bin/python plots.py severity` | Only the recovery time vs. crash size figure, plus its CSV | ~3 min |
+| `.venv/bin/python plots.py length` | Only the crash length vs. depth figure, plus its CSV | ~4 min |
 | `.venv/bin/python recovery.py` | Prints recovery times for crashes of several sizes | ~20 s |
 | `.venv/bin/python diversity.py` | Prints average Tajima's D over time for steady, crash and growth | ~5 s |
 | `.venv/bin/python infinite_sites.py` | Runs one population to equilibrium and prints its variation | <1 s |

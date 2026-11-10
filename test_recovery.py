@@ -76,8 +76,10 @@ class TestCompareToSteady(unittest.TestCase):
                 self.assertGreater(gen, 0)
 
     def test_recovery_times_over_seeds_shape(self):
-        times = recovery_times_over_seeds(self.normal_size, crash_sizes=[25, 5], gens_crash=5,
-                                          gens_after=50, mu=self.mu,
+        histories = {crash_size: make_crash_history(self.normal_size, crash_size, gens_before=0,
+                                                    gens_crash=5, gens_after=50)
+                     for crash_size in [25, 5]}
+        times = recovery_times_over_seeds(self.normal_size, histories, mu=self.mu,
                                           sample_size=self.sample_size, num_trials=20,
                                           record_every=10, seeds=[1, 2, 3])
         self.assertEqual(set(times), {"S", "pi", "theta_w", "D"})

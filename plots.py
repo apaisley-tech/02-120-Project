@@ -2,11 +2,12 @@
 Plots how Tajima's D and pi change over time after population crashes or growth
 of different sizes, and how long crashes of different sizes take to recover from.
 
-Run with: python3 plots.py [crash | growth | severity]
-With no argument, all three figures are made. They are saved to
-figures/crash_recovery.png, figures/growth_recovery.png and
-figures/recovery_vs_crash_size.png; the severity option also saves the
-recovery times to figures/recovery_vs_crash_size.csv.
+Run with: python3 plots.py [crash | growth | severity | length]
+With no argument, all four figures are made. They are saved to
+figures/crash_recovery.png, figures/growth_recovery.png,
+figures/recovery_vs_crash_size.png and figures/recovery_vs_crash_strength.png;
+the severity and length options also save their recovery times to a CSV file
+with the same name.
 
 Pseudocode
 
@@ -21,6 +22,12 @@ PlotRecoveryVsCrashSize(times, crashSizes)
         plot each seed's recovery time against crash size as a small dot
         plot the average over seeds as a line
     put crash size on a log scale, reversed so more severe crashes are to the right
+
+PlotRecoveryVsStrength(times, depths, lengths)
+    in one panel for D and one for pi
+        for every crash depth, plot recovery time against the crash strength
+        length / (2 * depth), as a line through the averages over seeds
+    if strength alone sets recovery time, the lines for different depths overlap
 """
 
 import csv
@@ -153,23 +160,25 @@ def plot_recovery_vs_crash_size(times: dict[str, np.ndarray], crash_sizes: list[
     plt.close(fig)
 
 
-def save_recovery_csv(times: dict[str, np.ndarray], crash_sizes: list[int],
-                      seeds: list[int], path: str) -> None:
+def save_recovery_csv(times: dict[str, np.ndarray], scenarios: list[tuple],
+                      scenario_headers: list[str], seeds: list[int], path: str) -> None:
     """
-    Saves recovery times to a CSV file with one row per seed and crash size.
+    Saves recovery times to a CSV file with one row per seed and scenario.
     Parameters:
     - times (dict[str, np.ndarray]): The output of recovery_times_over_seeds.
-    - crash_sizes (list[int]): The population sizes during the crash.
+    - scenarios (list[tuple]): The settings of each scenario, one per column of times,
+      such as (crash size,) or (crash size, crash length).
+    - scenario_headers (list[str]): The column names for the settings in scenarios.
     - seeds (list[int]): The random seeds used, one per row of times.
     - path (str): Where to save the file. Times that did not recover are left blank.
     """
     stats = list(times)
     with open(path, "w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["seed", "crash_size"] + [f"{stat}_recovery" for stat in stats])
+        writer.writerow(["seed"] + scenario_headers + [f"{stat}_recovery" for stat in stats])
         for i, seed in enumerate(seeds):
-            for j, crash_size in enumerate(crash_sizes):
-                row = [seed, crash_size]
+            for j, scenario in enumerate(scenarios):
+                row = [seed, *scenario]
                 for stat in stats:
                     value = times[stat][i, j]
                     row.append("" if np.isnan(value) else int(value))
@@ -189,16 +198,20 @@ def make_severity_figure(normal_size: int, mu: float, sample_size: int,
     crash_sizes = [150, 100, 70, 50, 30, 20, 15, 10]
     seeds = [120, 121, 122, 123, 124]
     gens_after = 1500
-    times = recovery_times_over_seeds(normal_size, crash_sizes, gens_crash, gens_after, mu,
-                                      sample_size, num_trials=200, record_every=10,
-                                      seeds=seeds)
+    histories = {crash_size: wright_fisher.make_crash_history(
+                     normal_size, crash_size, gens_before=0, gens_crash=gens_crash,
+                     gens_after=gens_after)
+                 for crash_size in crash_sizes}
+    times = recovery_times_over_seeds(normal_size, histories, mu, sample_size, num_trials=200,
+                                      record_every=10, seeds=seeds)
 
     title = (f"How long a {gens_crash}-generation crash affects Tajima's D and π "
              "(200 populations per seed)")
     path = os.path.join("figures", "recovery_vs_crash_size.png")
     plot_recovery_vs_crash_size(times, crash_sizes, normal_size, gens_crash, title, path)
     csv_path = os.path.join("figures", "recovery_vs_crash_size.csv")
-    save_recovery_csv(times, crash_sizes, seeds, csv_path)
+    save_recovery_csv(times, [(size,) for size in crash_sizes], ["crash_size"], seeds,
+                      csv_path)
     print(f"Saved {path} and {csv_path}")
 
     print(f"{'crash size':>10} {'D recovers':>16} {'pi recovers':>16}   (mean ± SD over seeds)")
@@ -213,6 +226,93 @@ def make_severity_figure(normal_size: int, mu: float, sample_size: int,
             cells.append(cell)
         print(f"{crash_size:>10} {cells[0]:>16} {cells[1]:>16}")
     print(f"n.r. = not recovered within {gens_crash + gens_after} generations")
+
+
+def plot_recovery_vs_strength(times: dict[str, np.ndarray], scenarios: list[tuple[int, int]],
+                              depths: list[int], normal_size: int, title: str,
+                              path: str) -> None:
+    """
+    Plots recovery time against crash strength, length / (2 * depth), with one line per
+    crash depth, in one panel for Tajima's D and one for pi, and saves the figure.
+    Parameters:
+    - times (dict[str, np.ndarray]): The output of recovery_times_over_seeds.
+    - scenarios (list[tuple[int, int]]): The (depth, length) of each crash, one per
+      column of times.
+    - depths (list[int]): The crash depths, mildest (largest) first.
+    - normal_size (int): The population size before and after each crash.
+    - title (str): The figure title.
+    - path (str): Where to save the figure.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5), sharey=True, facecolor=SURFACE)
+    strengths = sorted({length / (2 * depth) for depth, length in scenarios})
+    # Skip the lightest ramp step so three lines stay distinct.
+    colors = dict(zip(depths, EVENT_COLORS[-len(depths):]))
+
+    for ax, stat in zip(axes, ["D", "pi"]):
+        style_axes(ax)
+        for depth in depths:
+            columns = [j for j, (d, _) in enumerate(scenarios) if d == depth]
+            x = [scenarios[j][1] / (2 * depth) for j in columns]
+            for j, strength in zip(columns, x):
+                ax.scatter([strength] * len(times[stat]), times[stat][:, j], s=14,
+                           color=colors[depth], alpha=0.35, linewidths=0)
+            means = np.nanmean(times[stat][:, columns], axis=0)
+            ax.plot(x, means, color=colors[depth], linewidth=2, marker="o", markersize=6,
+                    label=f"crash to N = {depth}")
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(strengths)
+        ax.set_xticklabels([f"{strength:g}" for strength in strengths])
+        ax.minorticks_off()
+        ax.set_ylim(bottom=0)
+        ax.set_title(STAT_LABELS[stat], loc="left", fontsize=11, color=TEXT_PRIMARY)
+        ax.set_xlabel("crash strength: length / (2 × crash size)", color=TEXT_PRIMARY,
+                      fontsize=10)
+
+    axes[0].set_ylabel("recovery time (generations since the crash began)",
+                       color=TEXT_PRIMARY, fontsize=10)
+    axes[0].legend(frameon=False, fontsize=8.5, labelcolor=TEXT_PRIMARY, loc="upper left")
+
+    fig.suptitle(title, x=0.07, ha="left", fontsize=12, color=TEXT_PRIMARY)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def make_length_figure(normal_size: int, mu: float, sample_size: int) -> None:
+    """
+    Runs crashes of every combination of depth and length over several seeds,
+    then saves the figure and CSV.
+    Parameters:
+    - normal_size (int): The population size before and after each crash.
+    - mu (float): The mutation rate per gene copy per generation.
+    - sample_size (int): The number of sampled sequences n.
+    """
+    depths = [40, 20, 10]
+    lengths = [5, 10, 20, 40]
+    seeds = [120, 121, 122, 123, 124]
+    total_gens = 1600
+    scenarios = [(depth, length) for depth in depths for length in lengths]
+    histories = {(depth, length): wright_fisher.make_crash_history(
+                     normal_size, depth, gens_before=0, gens_crash=length,
+                     gens_after=total_gens - length)
+                 for depth, length in scenarios}
+    times = recovery_times_over_seeds(normal_size, histories, mu, sample_size, num_trials=200,
+                                      record_every=10, seeds=seeds)
+
+    title = (f"Crashes from N = {normal_size} of different depths and lengths: "
+             "recovery depends mainly on strength")
+    path = os.path.join("figures", "recovery_vs_crash_strength.png")
+    plot_recovery_vs_strength(times, scenarios, depths, normal_size, title, path)
+    csv_path = os.path.join("figures", "recovery_vs_crash_strength.csv")
+    save_recovery_csv(times, scenarios, ["crash_size", "crash_length"], seeds, csv_path)
+    print(f"Saved {path} and {csv_path}")
+
+    print(f"{'crash size':>10} {'length':>6} {'strength':>8} {'D recovers':>12} "
+          f"{'pi recovers':>12}   (mean ± SD over seeds)")
+    for j, (depth, length) in enumerate(scenarios):
+        cells = [f"{np.nanmean(times[stat][:, j]):.0f} ± {np.nanstd(times[stat][:, j]):.0f}"
+                 for stat in ["D", "pi"]]
+        print(f"{depth:>10} {length:>6} {length / (2 * depth):>8g} {cells[0]:>12} {cells[1]:>12}")
 
 
 def main():
@@ -239,13 +339,16 @@ def main():
                    "Tajima's D and π over time"),
     }
 
-    chosen = sys.argv[1:] or list(figures) + ["severity"]
-    if any(name not in list(figures) + ["severity"] for name in chosen):
-        sys.exit("usage: python3 plots.py [crash | growth | severity]")
+    options = list(figures) + ["severity", "length"]
+    chosen = sys.argv[1:] or options
+    if any(name not in options for name in chosen):
+        sys.exit("usage: python3 plots.py [crash | growth | severity | length]")
 
     os.makedirs("figures", exist_ok=True)
     if "severity" in chosen:
         make_severity_figure(normal_size, mu, sample_size, event_gens)
+    if "length" in chosen:
+        make_length_figure(normal_size, mu, sample_size)
     for name in [name for name in chosen if name in figures]:
         wright_fisher.set_seed(120)
         histories, title = figures[name]
