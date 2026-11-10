@@ -37,14 +37,15 @@ TajimasD(counts, n)
     return (NucleotideDiversity(counts, n) - S / a1) / sqrt(e1 * S + e2 * S * (S - 1))
 
 AverageSampleStats(popSizes, mu, n, numTrials, recordGens)
-    for numTrials total trials
-        freqs ← empty list
-        for every generation t
-            freqs ← SitesGeneration(popSizes[t], freqs, mu)
-            if t is in recordGens
-                counts ← SampleCounts(freqs, popSizes[t], n)
-                add S, pi, theta_W and D of counts to the running totals for t
-    return the averages for every t in recordGens, skipping undefined D values
+    (All trials run at once, as in SitesGenerationMany.)
+    freqs, trialIds ← empty lists
+    for every generation t
+        freqs, trialIds ← SitesGenerationMany(popSizes[t], freqs, trialIds, numTrials, mu)
+        if t is in recordGens
+            counts ← SampleCounts(freqs, popSizes[t], n), keeping each site's trial id
+            for every trial j
+                record S, pi, theta_W and D of the counts whose trial id is j
+    return the averages over trials for every t in recordGens, skipping undefined D values
 """
 
 import math
@@ -52,7 +53,7 @@ import math
 import numpy as np
 
 import wright_fisher
-from infinite_sites import sites_generation
+from infinite_sites import sites_generation_many
 
 
 def sample_counts(freqs: np.ndarray, pop_size: int, sample_size: int) -> np.ndarray:
@@ -71,10 +72,33 @@ def sample_counts(freqs: np.ndarray, pop_size: int, sample_size: int) -> np.ndar
     if sample_size < 2 or sample_size > num_copies:
         raise ValueError("sample_size must be between 2 and 2 * pop_size.")
 
+    counts, _ = sample_counts_many(freqs, np.zeros(len(freqs), dtype=int), pop_size,
+                                   sample_size)
+    return counts
+
+
+def sample_counts_many(freqs: np.ndarray, trial_ids: np.ndarray, pop_size: int,
+                       sample_size: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Runs sample_counts for many populations at once (see sites_generation_many).
+    Parameters:
+    - freqs (np.ndarray): The mutant frequency at each variable site, across all populations.
+    - trial_ids (np.ndarray): For each site, which population it is in.
+    - pop_size (int): The number of diploid individuals N in every population.
+    - sample_size (int): The number of sequences n sampled from each population.
+    Returns:
+    - tuple[np.ndarray, np.ndarray]: The mutant count at each site that varies
+      within its population's sample, and the population id of each of those sites.
+    """
+    num_copies = 2 * pop_size
+    if sample_size < 2 or sample_size > num_copies:
+        raise ValueError("sample_size must be between 2 and 2 * pop_size.")
+
     mutant_copies = np.round(freqs * num_copies).astype(int)
     counts = wright_fisher.rng.hypergeometric(mutant_copies, num_copies - mutant_copies,
                                               sample_size)
-    return counts[(counts > 0) & (counts < sample_size)]
+    segregating = (counts > 0) & (counts < sample_size)
+    return counts[segregating], trial_ids[segregating]
 
 
 def nucleotide_diversity(counts: np.ndarray, sample_size: int) -> float:
@@ -125,10 +149,23 @@ def tajimas_d(counts: np.ndarray, sample_size: int) -> float:
     - float: Tajima's D, or nan when the sample has no segregating sites
       (D is undefined then).
     """
-    num_segregating = len(counts)
-    if num_segregating == 0:
+    if len(counts) == 0:
         return math.nan
+    return float(tajimas_d_from_summary(nucleotide_diversity(counts, sample_size),
+                                        len(counts), sample_size))
 
+
+def tajimas_d_from_summary(pi, num_segregating, sample_size: int):
+    """
+    Computes Tajima's D from pi and S, following equation 38 of Tajima (1989).
+    Works on single numbers or on NumPy arrays (one entry per sample).
+    Parameters:
+    - pi: The average pairwise difference of each sample.
+    - num_segregating: The number of segregating sites S of each sample.
+    - sample_size (int): The number of sampled sequences n.
+    Returns:
+    - Tajima's D for each sample, or nan where S = 0 (D is undefined then).
+    """
     n = sample_size
     a1, a2 = harmonic_sums(n)
     b1 = (n + 1) / (3 * (n - 1))
@@ -138,9 +175,10 @@ def tajimas_d(counts: np.ndarray, sample_size: int) -> float:
     e1 = c1 / a1
     e2 = c2 / (a1 ** 2 + a2)
 
-    difference = nucleotide_diversity(counts, n) - num_segregating / a1
+    difference = pi - num_segregating / a1
     variance = e1 * num_segregating + e2 * num_segregating * (num_segregating - 1)
-    return difference / math.sqrt(variance)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(num_segregating > 0, difference / np.sqrt(variance), np.nan)
 
 
 def average_sample_stats(pop_sizes: list[int], mu: float, sample_size: int,
@@ -168,17 +206,23 @@ def average_sample_stats(pop_sizes: list[int], mu: float, sample_size: int,
 
     index = {t: i for i, t in enumerate(record_gens)}
     stats = {name: np.zeros((num_trials, len(record_gens))) for name in ["S", "pi", "theta_w", "D"]}
-    for trial in range(num_trials):
-        freqs = np.empty(0)
-        for t, pop_size in enumerate(pop_sizes, start=1):
-            freqs = sites_generation(pop_size, freqs, mu)
-            if t in index:
-                counts = sample_counts(freqs, pop_size, sample_size)
-                i = index[t]
-                stats["S"][trial, i] = len(counts)
-                stats["pi"][trial, i] = nucleotide_diversity(counts, sample_size)
-                stats["theta_w"][trial, i] = watterson_theta(counts, sample_size)
-                stats["D"][trial, i] = tajimas_d(counts, sample_size)
+    a1, _ = harmonic_sums(sample_size)
+    num_pairs = sample_size * (sample_size - 1) / 2
+
+    freqs, trial_ids = np.empty(0), np.empty(0, dtype=int)
+    for t, pop_size in enumerate(pop_sizes, start=1):
+        freqs, trial_ids = sites_generation_many(pop_size, freqs, trial_ids, num_trials, mu)
+        if t in index:
+            counts, count_ids = sample_counts_many(freqs, trial_ids, pop_size, sample_size)
+            # Add up each trial's sites: S counts them, pi sums their pairwise differences.
+            num_segregating = np.bincount(count_ids, minlength=num_trials)
+            pi = np.bincount(count_ids, weights=counts * (sample_size - counts),
+                             minlength=num_trials) / num_pairs
+            i = index[t]
+            stats["S"][:, i] = num_segregating
+            stats["pi"][:, i] = pi
+            stats["theta_w"][:, i] = num_segregating / a1
+            stats["D"][:, i] = tajimas_d_from_summary(pi, num_segregating, sample_size)
 
     averages = {}
     for name, values in stats.items():

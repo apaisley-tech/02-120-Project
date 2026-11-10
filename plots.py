@@ -8,11 +8,6 @@ and figures/growth_recovery.png.
 
 Pseudocode
 
-RunExperiment(normalSize, histories, mu, n, numTrials, recordEvery)
-    for every label, sizes in histories
-        results[label] ← CompareToSteady(normalSize, sizes, mu, n, numTrials, recordEvery)
-    return results
-
 PlotRecovery(results, eventGens)
     draw two panels sharing the time axis: Tajima's D on top, pi below
     in each panel, draw the steady control as a gray dashed line and one line
@@ -29,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import wright_fisher
-from recovery import compare_to_steady
+from recovery import compare_histories
 
 # Ordinal blue ramp, light (mild event) to dark (extreme event).
 EVENT_COLORS = ["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
@@ -38,26 +33,6 @@ TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 GRID_COLOR = "#e4e3df"
 SURFACE = "#fcfcfb"
-
-
-def run_experiment(normal_size: int, histories: dict[str, list[int]], mu: float,
-                   sample_size: int, num_trials: int, record_every: int) -> dict[str, dict]:
-    """
-    Runs compare_to_steady for several population size histories.
-    Parameters:
-    - normal_size (int): The population size during the burn-in and in the steady control.
-    - histories (dict[str, list[int]]): A label and the population size in each
-      generation after the burn-in, for every event to compare, from mildest to most extreme.
-    - mu (float): The mutation rate per gene copy per generation.
-    - sample_size (int): The number of sampled sequences n.
-    - num_trials (int): The number of independent simulations per population.
-    - record_every (int): How many generations apart to sample.
-    Returns:
-    - dict[str, dict]: The compare_to_steady result for each label.
-    """
-    return {label: compare_to_steady(normal_size, sizes, mu, sample_size, num_trials,
-                                     record_every)
-            for label, sizes in histories.items()}
 
 
 def style_axes(ax: plt.Axes) -> None:
@@ -81,7 +56,7 @@ def plot_recovery(results: dict[str, dict], normal_size: int, event_name: str,
     """
     Draws Tajima's D and pi over time for each event and saves the figure.
     Parameters:
-    - results (dict[str, dict]): The output of run_experiment, mildest event first.
+    - results (dict[str, dict]): The output of compare_histories, mildest event first.
     - normal_size (int): The population size of the steady control.
     - event_name (str): A word for the event, such as "crash" or "growth".
     - event_gens (int): The number of generations the event lasted.
@@ -153,8 +128,8 @@ def main():
     for name in chosen:
         wright_fisher.set_seed(120)
         histories, title = figures[name]
-        results = run_experiment(normal_size, histories, mu, sample_size, num_trials=200,
-                                 record_every=10)
+        results = compare_histories(normal_size, histories, mu, sample_size, num_trials=200,
+                                    record_every=10)
         path = os.path.join("figures", f"{name}_recovery.png")
         plot_recovery(results, normal_size, name, event_gens, theta, title, path)
         print(f"Saved {path}")

@@ -25,6 +25,19 @@ SimulateSites(popSizes, mu, freqs)
 TotalHeterozygosity(freqs)
     return the sum of 2 * freqs[i] * (1 - freqs[i]) over all sites i
 
+SitesGenerationMany(popSize, freqs, trialIds, numTrials, mu)
+    (The same as SitesGeneration, for numTrials independent populations at once.
+    The sites of every population share one list; trialIds[i] says which
+    population site i belongs to.)
+    numCopies ← 2 * popSize
+    for every site i
+        freqs[i] ← RandBinomial(numCopies, freqs[i]) / numCopies
+    remove every site with freqs[i] = 0 or freqs[i] = 1, along with its trialIds[i]
+    for every trial j
+        numNew ← RandPoisson(numCopies * mu)
+        append numNew sites with frequency 1 / numCopies and trial id j
+    return freqs, trialIds
+
 AverageTotalHeterozygosity(popSizes, mu, numTrials)
     totals ← list of zeros, one per generation
     for numTrials total trials
@@ -67,6 +80,40 @@ def sites_generation(pop_size: int, freqs: np.ndarray, mu: float) -> np.ndarray:
     num_new = rng.poisson(num_copies * mu)
     new_freqs = np.full(num_new, 1 / num_copies)
     return np.concatenate([freqs, new_freqs])
+
+
+def sites_generation_many(pop_size: int, freqs: np.ndarray, trial_ids: np.ndarray,
+                          num_trials: int, mu: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Runs sites_generation for many independent populations at once. Keeping every
+    population's sites in one array lets NumPy handle them all in a single call,
+    which is much faster than looping over populations.
+    Parameters:
+    - pop_size (int): The number of diploid individuals N in the new generation
+      (the same for every population).
+    - freqs (np.ndarray): The mutant frequency at each variable site, across all populations.
+    - trial_ids (np.ndarray): For each site, which population (0 to num_trials - 1) it is in.
+    - num_trials (int): The number of populations.
+    - mu (float): The mutation rate per gene copy per generation.
+    Returns:
+    - tuple[np.ndarray, np.ndarray]: The new frequencies and their population ids.
+    """
+    if pop_size <= 0:
+        raise ValueError("pop_size must be a positive integer.")
+    if mu < 0:
+        raise ValueError("mu must be non-negative.")
+
+    rng = wright_fisher.rng
+    num_copies = 2 * pop_size
+
+    freqs = rng.binomial(num_copies, freqs) / num_copies
+    still_variable = (freqs > 0) & (freqs < 1)
+    freqs, trial_ids = freqs[still_variable], trial_ids[still_variable]
+
+    num_new = rng.poisson(num_copies * mu, size=num_trials)
+    new_ids = np.repeat(np.arange(num_trials), num_new)
+    new_freqs = np.full(len(new_ids), 1 / num_copies)
+    return np.concatenate([freqs, new_freqs]), np.concatenate([trial_ids, new_ids])
 
 
 def simulate_sites(pop_sizes: list[int], mu: float,

@@ -14,6 +14,7 @@ from diversity import (
     nucleotide_diversity,
     sample_counts,
     tajimas_d,
+    tajimas_d_from_summary,
     watterson_theta,
 )
 from wright_fisher import make_crash_history, make_growth_history, set_seed
@@ -40,6 +41,11 @@ class TestStatistics(unittest.TestCase):
         # D = (5/3 - 18/11) / sqrt(3 * e1 + 6 * e2).
         expected = (5 / 3 - 18 / 11) / math.sqrt(3 * 2 / 363 + 6 * 83 / 30855)
         self.assertAlmostEqual(tajimas_d(self.counts, 4), expected)
+
+    def test_tajimas_d_from_summary_on_arrays(self):
+        d = tajimas_d_from_summary(np.array([10 / 6, 0.0]), np.array([3, 0]), 4)
+        self.assertAlmostEqual(d[0], tajimas_d(self.counts, 4))
+        self.assertTrue(math.isnan(d[1]))
 
     def test_tajimas_d_undefined_without_variation(self):
         self.assertTrue(math.isnan(tajimas_d(np.empty(0, dtype=int), 10)))

@@ -24,15 +24,21 @@ RecoveryTime(gens, values, baseline, tolerances)
             return gens[i + 1]
     return gens[0]
 
-CompareToSteady(normalSize, eventSizes, mu, n, numTrials, recordEvery, numSE)
+CompareHistories(normalSize, histories, mu, n, numTrials, recordEvery, numSE)
+    (Every history must have the same length; the steady control is simulated once.)
     burnIn ← 10 * normalSize copies of normalSize
-    gens ← 0, recordEvery, 2 * recordEvery, ... up to len(eventSizes)
-    event ← AverageSampleStats(burnIn + eventSizes, ...) at the end of burnIn + gens
-    steady ← AverageSampleStats(burnIn + normalSize copies, ...) at the same generations
-    for every statistic (S, pi, theta_W, D)
-        tolerances ← numSE * sqrt(event standard error^2 + steady standard error^2)
-        recovery[statistic] ← RecoveryTime(gens, event, steady, tolerances)
-    return gens, event, steady, recovery
+    gens ← 0, recordEvery, 2 * recordEvery, ... up to the history length
+    steady ← AverageSampleStats(burnIn + normalSize copies, ...) at the end of burnIn + gens
+    for every label, eventSizes in histories
+        event ← AverageSampleStats(burnIn + eventSizes, ...) at the same generations
+        for every statistic (S, pi, theta_W, D)
+            tolerances ← numSE * sqrt(event standard error^2 + steady standard error^2)
+            recovery[statistic] ← RecoveryTime(gens, event, steady, tolerances)
+        results[label] ← gens, event, steady, recovery
+    return results
+
+CompareToSteady(normalSize, eventSizes, mu, n, numTrials, recordEvery, numSE)
+    return CompareHistories(normalSize, {one label: eventSizes}, ...) for that label
 """
 
 import numpy as np
@@ -87,19 +93,46 @@ def compare_to_steady(normal_size: int, event_sizes: list[int], mu: float,
       (for each of "S", "pi", "theta_w" and "D", the recovery time, or None
       if it has not recovered).
     """
-    burn_in = [normal_size] * (10 * normal_size)
-    gens = list(range(0, len(event_sizes) + 1, record_every))
-    record_gens = [len(burn_in) + t for t in gens]
+    results = compare_histories(normal_size, {"event": event_sizes}, mu, sample_size,
+                                num_trials, record_every, num_se)
+    return results["event"]
 
-    event = average_sample_stats(burn_in + event_sizes, mu, sample_size, num_trials, record_gens)
-    steady = average_sample_stats(burn_in + [normal_size] * len(event_sizes), mu, sample_size,
+
+def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: float,
+                      sample_size: int, num_trials: int, record_every: int,
+                      num_se: float = 4) -> dict[str, dict]:
+    """
+    Runs compare_to_steady for several events that share one steady control,
+    so the control only needs to be simulated once.
+    Parameters:
+    - normal_size (int): The population size during the burn-in and in the control.
+    - histories (dict): A label and the population size in each
+      generation after the burn-in, for every event. All must have the same length.
+    - mu, sample_size, num_trials, record_every, num_se: As in compare_to_steady.
+    Returns:
+    - dict[str, dict]: The compare_to_steady result for each label.
+    """
+    lengths = {len(sizes) for sizes in histories.values()}
+    if len(lengths) != 1:
+        raise ValueError("Every history must have the same number of generations.")
+    num_gens = lengths.pop()
+
+    burn_in = [normal_size] * (10 * normal_size)
+    gens = list(range(0, num_gens + 1, record_every))
+    record_gens = [len(burn_in) + t for t in gens]
+    steady = average_sample_stats(burn_in + [normal_size] * num_gens, mu, sample_size,
                                   num_trials, record_gens)
 
-    recovery = {}
-    for stat in ["S", "pi", "theta_w", "D"]:
-        tolerances = list(num_se * np.hypot(event[stat + "_se"], steady[stat + "_se"]))
-        recovery[stat] = recovery_time(gens, event[stat], steady[stat], tolerances)
-    return {"gens": gens, "event": event, "steady": steady, "recovery": recovery}
+    results = {}
+    for label, event_sizes in histories.items():
+        event = average_sample_stats(burn_in + event_sizes, mu, sample_size, num_trials,
+                                     record_gens)
+        recovery = {}
+        for stat in ["S", "pi", "theta_w", "D"]:
+            tolerances = list(num_se * np.hypot(event[stat + "_se"], steady[stat + "_se"]))
+            recovery[stat] = recovery_time(gens, event[stat], steady[stat], tolerances)
+        results[label] = {"gens": gens, "event": event, "steady": steady, "recovery": recovery}
+    return results
 
 
 def main():
@@ -111,11 +144,13 @@ def main():
     print(f"N = {normal_size}, theta = 4N * mu = {4 * normal_size * mu:.0f}, n = {sample_size}, "
           f"200 runs each; crashes last 20 generations")
     print(f"{'crash size':>10} {'peak D':>7} {'lowest D':>9} {'D recovers':>11} {'pi recovers':>12}")
-    for crash_size in [100, 50, 20, 10]:
-        sizes = wright_fisher.make_crash_history(normal_size, crash_size, gens_before=0,
-                                                 gens_crash=20, gens_after=gens_after)
-        result = compare_to_steady(normal_size, sizes, mu, sample_size, num_trials=200,
-                                   record_every=20)
+    histories = {crash_size: wright_fisher.make_crash_history(normal_size, crash_size,
+                                                              gens_before=0, gens_crash=20,
+                                                              gens_after=gens_after)
+                 for crash_size in [100, 50, 20, 10]}
+    results = compare_histories(normal_size, histories, mu, sample_size, num_trials=200,
+                                record_every=20)
+    for crash_size, result in results.items():
         d = result["event"]["D"]
         print(f"{crash_size:>10} {max(d):>7.2f} {min(d):>9.2f} "
               f"{str(result['recovery']['D']):>11} {str(result['recovery']['pi']):>12}")

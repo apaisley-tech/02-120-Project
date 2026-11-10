@@ -12,6 +12,7 @@ from infinite_sites import (
     average_total_heterozygosity,
     simulate_sites,
     sites_generation,
+    sites_generation_many,
     total_heterozygosity,
 )
 from wright_fisher import make_crash_history, set_seed
@@ -42,6 +43,34 @@ class TestSitesGeneration(unittest.TestCase):
     def test_total_heterozygosity(self):
         self.assertAlmostEqual(total_heterozygosity(np.array([0.5, 0.1])), 0.5 + 0.18)
         self.assertEqual(total_heterozygosity(np.empty(0)), 0.0)
+
+
+class TestSitesGenerationMany(unittest.TestCase):
+    def setUp(self):
+        set_seed(120)
+
+    def test_trial_ids_and_frequencies_are_valid(self):
+        freqs, trial_ids = np.empty(0), np.empty(0, dtype=int)
+        for _ in range(200):
+            freqs, trial_ids = sites_generation_many(50, freqs, trial_ids, num_trials=7, mu=0.05)
+        self.assertEqual(len(freqs), len(trial_ids))
+        self.assertTrue(np.all((trial_ids >= 0) & (trial_ids < 7)))
+        self.assertTrue(np.all((freqs > 0) & (freqs < 1)))
+        # Every population should have collected some variation by now.
+        self.assertEqual(len(np.unique(trial_ids)), 7)
+
+    def test_heterozygosity_matches_theory_in_every_population(self):
+        """
+        After 1000 generations at N = 50 with mu = 0.05, the expected total
+        heterozygosity is close to 4N * mu - 2 * mu = 9.9 in each population.
+        Averaged over 500 populations, the standard error is about 0.08, so we allow 0.4.
+        """
+        num_trials = 500
+        freqs, trial_ids = np.empty(0), np.empty(0, dtype=int)
+        for _ in range(1000):
+            freqs, trial_ids = sites_generation_many(50, freqs, trial_ids, num_trials, mu=0.05)
+        per_trial = np.bincount(trial_ids, weights=2 * freqs * (1 - freqs), minlength=num_trials)
+        self.assertAlmostEqual(np.mean(per_trial), 9.9, delta=0.4)
 
 
 class TestHeterozygosityTheory(unittest.TestCase):

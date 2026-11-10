@@ -6,7 +6,7 @@ Run with: python3 -m unittest -v test_recovery
 
 import unittest
 
-from recovery import compare_to_steady, recovery_time
+from recovery import compare_histories, compare_to_steady, recovery_time
 from wright_fisher import make_crash_history, set_seed
 
 
@@ -53,6 +53,11 @@ class TestCompareToSteady(unittest.TestCase):
         for stat, gen in result["recovery"].items():
             with self.subTest(stat=stat):
                 self.assertEqual(gen, 0)
+
+    def test_histories_must_have_same_length(self):
+        with self.assertRaises(ValueError):
+            compare_histories(self.normal_size, {"a": [50] * 10, "b": [50] * 20}, self.mu,
+                              self.sample_size, num_trials=5, record_every=5)
 
     def test_crash_is_detected_and_recovers(self):
         sizes = make_crash_history(normal_size=self.normal_size, crash_size=5, gens_before=0,
