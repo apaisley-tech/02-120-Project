@@ -20,6 +20,17 @@ A 20-generation crash from N = 200 (200 simulated populations per line):
 - The more severe the crash, the longer the effect lasts. A 20-generation crash to N = 10
   is still detectable roughly 800 generations later for D and 950 for π.
 
+How recovery time depends on crash size (5 random seeds of 200 populations each; dots are
+single seeds, lines are averages; times are also saved in `figures/recovery_vs_crash_size.csv`):
+
+![Recovery time against crash size for Tajima's D and π](figures/recovery_vs_crash_size.png)
+
+- Halving the population (N = 100) for 20 generations barely registers: D recovers within
+  about 40 generations, and the drop in π is too small to detect.
+- Below that, recovery time rises steeply with severity, then levels off around
+  600–700 generations for D and 950 for π for crashes to N = 15 or less.
+- π takes longer to recover than D for every crash size that π can detect.
+
 Twenty generations of rapid growth from N = 200:
 
 ![Tajima's D and π after growth of different sizes](figures/growth_recovery.png)
@@ -46,9 +57,10 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 
 | Command | What it does | Time |
 |---|---|---|
-| `.venv/bin/python plots.py` | Makes both figures in `figures/` | ~1 min |
+| `.venv/bin/python plots.py` | Makes all three figures in `figures/` | ~4 min |
 | `.venv/bin/python plots.py crash` | Only the crash figure | ~15 s |
 | `.venv/bin/python plots.py growth` | Only the growth figure | ~50 s |
+| `.venv/bin/python plots.py severity` | Only the recovery-time figure, plus its CSV | ~3 min |
 | `.venv/bin/python recovery.py` | Prints recovery times for crashes of several sizes | ~20 s |
 | `.venv/bin/python diversity.py` | Prints average Tajima's D over time for steady, crash and growth | ~5 s |
 | `.venv/bin/python infinite_sites.py` | Runs one population to equilibrium and prints its variation | <1 s |
@@ -60,7 +72,7 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 .venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery
 ```
 
-The 33 tests take about 10 seconds. Besides unit tests with hand-worked answers, they check
+The 34 tests take about 10 seconds. Besides unit tests with hand-worked answers, they check
 the simulation against population-genetics theory:
 
 - A neutral allele fixes with probability equal to its starting frequency.

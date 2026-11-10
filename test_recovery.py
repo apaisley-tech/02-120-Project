@@ -6,7 +6,12 @@ Run with: python3 -m unittest -v test_recovery
 
 import unittest
 
-from recovery import compare_histories, compare_to_steady, recovery_time
+from recovery import (
+    compare_histories,
+    compare_to_steady,
+    recovery_time,
+    recovery_times_over_seeds,
+)
 from wright_fisher import make_crash_history, set_seed
 
 
@@ -69,6 +74,16 @@ class TestCompareToSteady(unittest.TestCase):
             with self.subTest(stat=stat):
                 self.assertIsNotNone(gen)
                 self.assertGreater(gen, 0)
+
+    def test_recovery_times_over_seeds_shape(self):
+        times = recovery_times_over_seeds(self.normal_size, crash_sizes=[25, 5], gens_crash=5,
+                                          gens_after=50, mu=self.mu,
+                                          sample_size=self.sample_size, num_trials=20,
+                                          record_every=10, seeds=[1, 2, 3])
+        self.assertEqual(set(times), {"S", "pi", "theta_w", "D"})
+        for stat, values in times.items():
+            with self.subTest(stat=stat):
+                self.assertEqual(values.shape, (3, 2))
 
 
 if __name__ == "__main__":

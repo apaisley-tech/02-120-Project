@@ -37,6 +37,17 @@ CompareHistories(normalSize, histories, mu, n, numTrials, recordEvery, numSE)
         results[label] ← gens, event, steady, recovery
     return results
 
+RecoveryTimesOverSeeds(normalSize, crashSizes, gensCrash, gensAfter, mu, n, numTrials,
+                       recordEvery, seeds)
+    for every seed in seeds
+        SetSeed(seed)
+        histories ← a crash history for every crashSize in crashSizes
+        results ← CompareHistories(normalSize, histories, ...)
+        for every statistic and crashSize
+            times[statistic][seed][crashSize] ← the recovery time in results
+                                                (undefined if not recovered)
+    return times
+
 CompareToSteady(normalSize, eventSizes, mu, n, numTrials, recordEvery, numSE)
     return CompareHistories(normalSize, {one label: eventSizes}, ...) for that label
 """
@@ -133,6 +144,41 @@ def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: flo
             recovery[stat] = recovery_time(gens, event[stat], steady[stat], tolerances)
         results[label] = {"gens": gens, "event": event, "steady": steady, "recovery": recovery}
     return results
+
+
+def recovery_times_over_seeds(normal_size: int, crash_sizes: list[int], gens_crash: int,
+                              gens_after: int, mu: float, sample_size: int, num_trials: int,
+                              record_every: int, seeds: list[int]) -> dict[str, np.ndarray]:
+    """
+    Measures recovery times after crashes of several sizes, repeating the whole
+    experiment with several random seeds to show how much the times vary.
+    Parameters:
+    - normal_size (int): The population size before and after each crash.
+    - crash_sizes (list[int]): The population sizes during the crash to compare.
+    - gens_crash (int): The number of generations each crash lasts.
+    - gens_after (int): The number of generations simulated after the crash ends.
+    - mu, sample_size, num_trials, record_every: As in compare_to_steady.
+    - seeds (list[int]): The random seeds, one per repeat of the experiment.
+    Returns:
+    - dict[str, np.ndarray]: For each of "S", "pi", "theta_w" and "D", an array with
+      one row per seed and one column per crash size, holding the recovery time in
+      generations since the crash began, or nan if it had not recovered by the end.
+    """
+    times = {stat: np.full((len(seeds), len(crash_sizes)), np.nan)
+             for stat in ["S", "pi", "theta_w", "D"]}
+    for i, seed in enumerate(seeds):
+        wright_fisher.set_seed(seed)
+        histories = {crash_size: wright_fisher.make_crash_history(
+                         normal_size, crash_size, gens_before=0, gens_crash=gens_crash,
+                         gens_after=gens_after)
+                     for crash_size in crash_sizes}
+        results = compare_histories(normal_size, histories, mu, sample_size, num_trials,
+                                    record_every)
+        for j, crash_size in enumerate(crash_sizes):
+            for stat, gen in results[crash_size]["recovery"].items():
+                if gen is not None:
+                    times[stat][i, j] = gen
+    return times
 
 
 def main():
