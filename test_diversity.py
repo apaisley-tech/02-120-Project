@@ -13,6 +13,9 @@ from diversity import (
     average_sample_stats,
     nucleotide_diversity,
     sample_counts,
+    sample_stats_per_trial,
+    summarize_trials,
+    tajima_critical_values,
     tajimas_d,
     tajimas_d_from_summary,
     watterson_theta,
@@ -129,6 +132,65 @@ class TestNeutralTheory(unittest.TestCase):
                                      record_gens=[len(sizes)])
         print(f"\nD after rapid growth = {stats['D'][0]:.3f} (theory: negative)")
         self.assertLess(stats["D"][0], -0.3)
+
+
+class TestPerTrialStats(unittest.TestCase):
+    """
+    Checks that per-population statistics have the right shape and that
+    averaging them gives the same answer as average_sample_stats.
+    """
+
+    def test_shape_and_matches_average(self):
+        sizes, mu, n, trials, gens = [50] * 300, 0.02, 10, 30, [100, 200, 300]
+        set_seed(7)
+        per_trial = sample_stats_per_trial(sizes, mu, n, trials, gens)
+        set_seed(7)
+        averaged = average_sample_stats(sizes, mu, n, trials, gens)
+        for name in ("S", "pi", "theta_w", "D"):
+            self.assertEqual(per_trial[name].shape, (trials, len(gens)))
+        self.assertEqual(summarize_trials(per_trial), averaged)
+
+    def test_summarize_skips_undefined_d(self):
+        """
+        Hand-worked: D values 1 and 3 plus one undefined value average to 2,
+        with standard error sd / sqrt(2) = sqrt(2) / sqrt(2) = 1.
+        """
+        stats = {"D": np.array([[1.0], [3.0], [np.nan]])}
+        summary = summarize_trials(stats)
+        self.assertAlmostEqual(summary["D"][0], 2.0)
+        self.assertAlmostEqual(summary["D_se"][0], 1.0)
+
+
+class TestCriticalValues(unittest.TestCase):
+    """
+    Checks the limits of Tajima's test from the beta distribution.
+    """
+
+    def test_limits_straddle_zero(self):
+        for n in (4, 10, 20, 50):
+            lower, upper = tajima_critical_values(n)
+            self.assertLess(lower, 0)
+            self.assertGreater(upper, 0)
+
+    def test_close_to_normal_for_large_samples(self):
+        """
+        D is scaled to have mean 0 and variance 1, so for large n the 5% limits
+        are near the normal ones, +-1.96, skewed to the right (Tajima 1989, Table 2).
+        """
+        lower, upper = tajima_critical_values(50)
+        self.assertAlmostEqual(lower, -1.96, delta=0.3)
+        self.assertAlmostEqual(upper, 1.96, delta=0.3)
+        self.assertGreater(abs(upper), abs(lower))
+
+    def test_stricter_level_widens_limits(self):
+        lower5, upper5 = tajima_critical_values(20, 0.05)
+        lower1, upper1 = tajima_critical_values(20, 0.01)
+        self.assertLess(lower1, lower5)
+        self.assertGreater(upper1, upper5)
+
+    def test_sample_too_small(self):
+        with self.assertRaises(ValueError):
+            tajima_critical_values(3)
 
 
 if __name__ == "__main__":

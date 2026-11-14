@@ -68,6 +68,29 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 .venv/bin/pip install -r requirements.txt
 ```
 
+## Interactive app
+
+```bash
+.venv/bin/streamlit run app.py
+```
+
+This opens the app in your browser. Pick a steady, crash or growth history in the sidebar
+(normal and event population size, event length, mutation rate, sample size, number of
+populations), then press **Run simulation** (about 5–30 seconds). The app simulates the
+event alongside a steady control and shows:
+
+- **Averages over time:** Tajima's D, π, θ_W and S averaged over the populations, with the
+  generation at which the event can no longer be told apart from the control.
+- **Single samples:** how often one sample from one population would be significant on
+  Tajima's test (5% level, beta-distribution limits from Tajima 1989), and a histogram of D
+  across populations at any chosen generation.
+- **Data:** the numbers behind the charts.
+
+Note: the simulation lets every site drift independently, as if sites were unlinked. This
+gives the right averages, but D varies less from population to population than Tajima's
+test assumes (it assumes no recombination), so single-sample significance rates in the app
+are lower than they would be for a single non-recombining gene.
+
 ## Running
 
 | Command | What it does | Time |
@@ -88,7 +111,7 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 .venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery
 ```
 
-The 34 tests take about 10 seconds. Besides unit tests with hand-worked answers, they check
+The 40 tests take about 10 seconds. Besides unit tests with hand-worked answers, they check
 the simulation against population-genetics theory:
 
 - A neutral allele fixes with probability equal to its starting frequency.
@@ -96,6 +119,7 @@ the simulation against population-genetics theory:
 - With mutation, total heterozygosity follows H′ = (1 − 1/2N)(H + 2μ) and levels off at 4Nμ − 2μ.
 - In a steady population, E[π] = E[θ_W] = 4Nμ and Tajima's D averages about 0.
 - Tajima's D is positive just after a crash and negative after rapid growth.
+- The 5% limits of Tajima's test are near ±1.96 for large samples and widen at stricter levels.
 
 ## How it works
 
@@ -103,9 +127,10 @@ the simulation against population-genetics theory:
 |---|---|
 | `wright_fisher.py` | One locus, two alleles: one generation of drift, population size histories (`make_crash_history`, `make_growth_history`), fixation probability. Also holds the shared random number generator (`set_seed`). |
 | `infinite_sites.py` | Many sites under the infinite-sites model: every mutation hits a new site. `sites_generation_many` advances many independent populations in one NumPy call. |
-| `diversity.py` | Samples n sequences without replacement and computes S, π, θ_W and Tajima's D. `average_sample_stats` averages them over many populations at chosen generations. |
+| `diversity.py` | Samples n sequences without replacement and computes S, π, θ_W and Tajima's D. `average_sample_stats` averages them over many populations at chosen generations; `sample_stats_per_trial` keeps each population's values. `tajima_critical_values` gives the limits of Tajima's test. |
 | `recovery.py` | Compares event populations with one steady control and finds the recovery time: the first generation after which they stay within 4 standard errors of each other. |
 | `plots.py` | Draws the figures above. |
+| `app.py` | The interactive Streamlit app. |
 
 Each simulation starts with no variation and runs a burn-in of 10N generations at the normal
 size, so variation reaches equilibrium before the crash or growth begins.
