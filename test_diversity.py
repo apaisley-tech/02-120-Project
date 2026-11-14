@@ -11,6 +11,7 @@ import numpy as np
 
 from diversity import (
     average_sample_stats,
+    control_limits,
     nucleotide_diversity,
     sample_counts,
     sample_stats_per_trial,
@@ -191,6 +192,43 @@ class TestCriticalValues(unittest.TestCase):
     def test_sample_too_small(self):
         with self.assertRaises(ValueError):
             tajima_critical_values(3)
+
+
+class TestControlLimits(unittest.TestCase):
+    """
+    Checks the limits taken from simulated steady populations.
+    """
+
+    def test_hand_worked_quantiles(self):
+        """
+        For the values 0, 1, ..., 100 (plus undefined values, which are ignored),
+        the 10% limits are the 5th and 95th percentiles: 5 and 95.
+        """
+        d = np.append(np.arange(101.0), [np.nan, np.nan])
+        lower, upper = control_limits(d, level=0.1)
+        self.assertAlmostEqual(lower, 5)
+        self.assertAlmostEqual(upper, 95)
+
+    def test_all_undefined(self):
+        lower, upper = control_limits(np.full((3, 2), np.nan))
+        self.assertTrue(math.isnan(lower) and math.isnan(upper))
+
+    def test_new_steady_populations_flagged_about_five_percent(self):
+        """
+        Limits from one set of steady populations should flag about 5% of a
+        second, independent set. With 400 populations the standard error of that
+        share is about 1.1%, so we allow 1.5% to 9%.
+        """
+        set_seed(120)
+        sizes, gens = [100] * 1000, [1000]
+        control = sample_stats_per_trial(sizes, 0.025, 20, 400, gens)["D"]
+        fresh = sample_stats_per_trial(sizes, 0.025, 20, 400, gens)["D"][:, 0]
+        lower, upper = control_limits(control)
+        share = np.mean((fresh < lower) | (fresh > upper))
+        print(f"\nShare of new steady samples outside the control limits = {share:.3f} "
+              f"(target 0.05)")
+        self.assertGreater(share, 0.015)
+        self.assertLess(share, 0.09)
 
 
 if __name__ == "__main__":

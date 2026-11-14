@@ -8,8 +8,9 @@ populations to simulate. The app simulates the event and a steady control
 population, samples sequences from every population, and shows
 - Tajima's D, pi, Watterson's theta and S averaged over the populations, with
   the generation at which the event can no longer be told apart from the control,
-- how often a single sample (one study, one population) would detect the event
-  with Tajima's test, and the spread of D across populations at any generation.
+- how often a single sample (one study, one population) has a D outside the
+  range seen in the steady control, and the spread of D across populations at
+  any generation.
 
 Run with: streamlit run app.py
 
@@ -36,6 +37,7 @@ FractionSignificant(dValues, lower, upper)
         fraction ← share of populations whose D is below lower or above upper
                    (populations with undefined D count as not significant)
     return the fractions
+    (lower and upper come from ControlLimits on the steady control's D values.)
 """
 
 import altair as alt
@@ -44,7 +46,8 @@ import pandas as pd
 import streamlit as st
 
 import wright_fisher
-from diversity import sample_stats_per_trial, summarize_trials, tajima_critical_values
+from diversity import (control_limits, sample_stats_per_trial, summarize_trials,
+                       tajima_critical_values)
 from recovery import recovery_times
 
 EVENT_COLOR = "#2a78d6"
@@ -103,11 +106,11 @@ def choose_record_every(total_gens: int) -> int:
 def fraction_significant(d_values: np.ndarray, lower: float, upper: float) -> np.ndarray:
     """
     Finds, at each recorded generation, the share of populations whose sample
-    would reject a steady population under Tajima's test.
+    has a D outside the range of a steady population.
     Parameters:
     - d_values (np.ndarray): Tajima's D with one row per population and one column
       per recorded generation; nan where D is undefined.
-    - lower, upper (float): The critical values from tajima_critical_values.
+    - lower, upper (float): The limits from control_limits.
     Returns:
     - np.ndarray: One fraction between 0 and 1 per recorded generation. Undefined
       D values count as not significant.
@@ -295,11 +298,11 @@ def stat_chart(result: dict, stat: str, settings: dict, event_label: str) -> alt
 def significance_chart(result: dict, lower: float, upper: float, settings: dict,
                        event_label: str) -> alt.Chart:
     """
-    Draws, over time, the share of single samples in which Tajima's test detects
-    a departure from a steady population.
+    Draws, over time, the share of single samples whose D is outside the range
+    of the steady control.
     Parameters:
     - result (dict): The output of run_scenario.
-    - lower, upper (float): The critical values of D.
+    - lower, upper (float): The limits of D from control_limits.
     - settings (dict): As in run_scenario.
     - event_label (str): The legend name of the event population.
     Returns:
@@ -313,7 +316,7 @@ def significance_chart(result: dict, lower: float, upper: float, settings: dict,
     lines = alt.Chart(frame).mark_line(strokeWidth=2).encode(
         x=alt.X("generation:Q", title="generations since the event began",
                 scale=alt.Scale(domain=[0, result["gens"][-1]], nice=False)),
-        y=alt.Y("percent:Q", title="% of samples where D is significant",
+        y=alt.Y("percent:Q", title="% of samples with unusual D",
                 scale=alt.Scale(domain=[0, 100])),
         color=alt.Color("population:N", scale=color_scale(event_label), title=None,
                         legend=alt.Legend(orient="top")),
@@ -329,11 +332,11 @@ def histogram_chart(result: dict, index: int, lower: float, upper: float,
                     event_label: str) -> alt.Chart:
     """
     Draws the spread of Tajima's D across populations at one recorded generation,
-    one panel for the event and one for the control, with the critical values marked.
+    one panel for the event and one for the control, with the limits marked.
     Parameters:
     - result (dict): The output of run_scenario.
     - index (int): Which recorded generation to show.
-    - lower, upper (float): The critical values of D.
+    - lower, upper (float): The limits of D from control_limits.
     - event_label (str): The legend name of the event population.
     Returns:
     - alt.Chart: Two histograms sharing the D axis.
@@ -448,7 +451,8 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
         st.caption("Both populations are steady, so they should match: every statistic "
                    "should count as back to normal at generation 0.")
 
-    lower, upper = tajima_critical_values(n)
+    lower, upper = control_limits(result["steady_trials"]["D"])
+    tajima_lower, tajima_upper = tajima_critical_values(n)
     tab_avg, tab_single, tab_data = st.tabs(["Averages over time", "Single samples", "Data"])
 
     with tab_avg:
@@ -460,15 +464,23 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
         st.altair_chart(stat_chart(result, stat, settings, event_label), width="stretch")
 
     with tab_single:
+        if np.isnan(lower):
+            st.warning("D is undefined in every steady sample (no segregating sites), so "
+                       "there is nothing to compare against. Try a higher mutation rate.")
+            return
         st.markdown(
-            f"A real study has **one** sample from **one** population. With n = {n}, "
-            f"Tajima's test flags a sample as not steady when D < {lower:.2f} or "
-            f"D > {upper:.2f} (5% level, Tajima 1989). This is how often that happens "
-            "in each simulated population.")
+            f"A real study has **one** sample from **one** population. In 95% of the "
+            f"steady control's samples (n = {n}), D lies between {lower:.2f} and "
+            f"{upper:.2f}. A sample outside that range looks unusual for a steady "
+            "population. This is how often that happens in each simulated population.")
         st.altair_chart(significance_chart(result, lower, upper, settings, event_label),
                         width="stretch")
-        st.caption("In the steady control this should stay at or below about 5% "
-                   "(the dotted line).")
+        st.caption(
+            "In the steady control this stays near 5% (the dotted line) by design. "
+            f"Tajima's standard 5% limits for n = {n} are {tajima_lower:.2f} and "
+            f"{tajima_upper:.2f}. They are wider because they assume the sites are linked "
+            "on one stretch of DNA, while this simulation lets every site drift "
+            "independently, so D varies less from population to population.")
         gen = st.select_slider("Show the spread of D at generation", result["gens"],
                                value=min(result["gens"], key=lambda g: abs(g - settings["event_gens"])))
         st.altair_chart(histogram_chart(result, result["gens"].index(gen), lower, upper,

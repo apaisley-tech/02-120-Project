@@ -55,6 +55,10 @@ TajimaCriticalValues(n, level)
     Dmin, Dmax ← the most negative and most positive D possible for n sequences
     fit a beta distribution on [Dmin, Dmax] with mean 0 and variance 1 (Tajima 1989)
     return the points with probability level / 2 below and level / 2 above
+
+ControlLimits(dValues, level)
+    keep only the defined values of D from the steady control populations
+    return the level / 2 and 1 - level / 2 quantiles of those values
 """
 
 import math
@@ -308,6 +312,31 @@ def tajima_critical_values(sample_size: int, level: float = 0.05) -> tuple[float
     cdf /= cdf[-1]
     d = d_min + x * (d_max - d_min)
     return (float(np.interp(level / 2, cdf, d)), float(np.interp(1 - level / 2, cdf, d)))
+
+
+def control_limits(d_values: np.ndarray, level: float = 0.05) -> tuple[float, float]:
+    """
+    Finds the values of Tajima's D beyond which a sample looks unusual compared
+    with simulated steady populations. Unlike tajima_critical_values, this does not
+    assume the sites are linked, so it matches how this simulation treats sites
+    (each one drifts independently).
+    Parameters:
+    - d_values (np.ndarray): D values from steady control populations, in any
+      shape; nan values (undefined D) are ignored.
+    - level (float): The share of steady samples that should fall outside the
+      limits, split equally between the two tails.
+    Returns:
+    - tuple[float, float]: The lower and upper limits, or (nan, nan) if no D value
+      is defined.
+    """
+    if not 0 < level < 1:
+        raise ValueError("level must be between 0 and 1.")
+    defined = np.asarray(d_values, dtype=float)
+    defined = defined[~np.isnan(defined)]
+    if defined.size == 0:
+        return (math.nan, math.nan)
+    lower, upper = np.quantile(defined, [level / 2, 1 - level / 2])
+    return (float(lower), float(upper))
 
 
 def main():
