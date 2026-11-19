@@ -9,10 +9,11 @@ import unittest
 from recovery import (
     compare_histories,
     compare_to_steady,
+    growth_recovery_times,
     recovery_time,
     recovery_times_over_seeds,
 )
-from wright_fisher import make_crash_history, set_seed
+from wright_fisher import make_crash_history, make_growth_history, set_seed
 
 
 class TestRecoveryTime(unittest.TestCase):
@@ -86,6 +87,49 @@ class TestCompareToSteady(unittest.TestCase):
         for stat, values in times.items():
             with self.subTest(stat=stat):
                 self.assertEqual(values.shape, (3, 2))
+
+
+class TestGrowthRecovery(unittest.TestCase):
+    """
+    Growth from N = 25 to 50 with mu = 0.05, so the new steady pi is 4 * 50 * 0.05 = 10.
+    """
+
+    mu = 0.05
+    sample_size = 10
+
+    def setUp(self):
+        set_seed(120)
+
+    def test_steady_control_at_new_size(self):
+        # A population that stays at size 50 is never different from a control of size 50
+        # when control_size is given explicitly.
+        result = compare_histories(50, {"steady": [50] * 100}, self.mu, self.sample_size,
+                                   num_trials=50, record_every=20, control_size=50)
+        for stat, gen in result["steady"]["recovery"].items():
+            with self.subTest(stat=stat):
+                self.assertEqual(gen, 0)
+
+    def test_growth_recovers_only_against_new_size(self):
+        sizes = make_growth_history(25, 50, gens_before=0, gens_growth=5, gens_after=495)
+        new = compare_histories(25, {"growth": sizes}, self.mu, self.sample_size,
+                                num_trials=100, record_every=10, control_size=50)["growth"]
+        old = compare_histories(25, {"growth": sizes}, self.mu, self.sample_size,
+                                num_trials=100, record_every=10)["growth"]
+        print(f"\nRecovery after growth from 25 to 50: {new['recovery']}")
+        # Against a control at the new size, pi starts too low and catches up.
+        self.assertLess(new["event"]["pi"][0], new["steady"]["pi"][0])
+        self.assertGreater(new["recovery"]["pi"], 0)
+        # Against a control at the old size, pi ends up permanently higher.
+        self.assertIsNone(old["recovery"]["pi"])
+
+    def test_growth_recovery_times_shape(self):
+        times = growth_recovery_times(25, [50, 100], gens_growth=5, total_gens={50: 60, 100: 80},
+                                      mu=self.mu, sample_size=self.sample_size, num_trials=20,
+                                      record_every={50: 10, 100: 20}, seeds=[1, 2])
+        self.assertEqual(set(times), {"S", "pi", "theta_w", "D"})
+        for stat, values in times.items():
+            with self.subTest(stat=stat):
+                self.assertEqual(values.shape, (2, 2))
 
 
 if __name__ == "__main__":

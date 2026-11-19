@@ -1,13 +1,14 @@
 """
 Plots how Tajima's D and pi change over time after population crashes or growth
-of different sizes, and how long crashes of different sizes take to recover from.
+of different sizes, and how long crashes and growth of different sizes take to
+recover from.
 
-Run with: python3 plots.py [crash | growth | severity | length]
-With no argument, all four figures are made. They are saved to
+Run with: python3 plots.py [crash | growth | severity | length | growthsize]
+With no argument, all five figures are made. They are saved to
 figures/crash_recovery.png, figures/growth_recovery.png,
-figures/recovery_vs_crash_size.png and figures/recovery_vs_crash_strength.png;
-the severity and length options also save their recovery times to a CSV file
-with the same name.
+figures/recovery_vs_crash_size.png, figures/recovery_vs_crash_strength.png and
+figures/recovery_vs_growth_size.png; the severity, length and growthsize options
+also save their recovery times to a CSV file with the same name.
 
 Pseudocode
 
@@ -28,6 +29,12 @@ PlotRecoveryVsStrength(times, depths, lengths)
         for every crash depth, plot recovery time against the crash strength
         length / (2 * depth), as a line through the averages over seeds
     if strength alone sets recovery time, the lines for different depths overlap
+
+PlotRecoveryVsGrowthSize(times, endSizes)
+    in the left panel, plot recovery time in generations against the size after growth
+    in the right panel, plot recovery time divided by the size after growth
+    in both, draw each seed as a small dot and the average over seeds as a line,
+    for D and for pi
 """
 
 import csv
@@ -41,7 +48,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import wright_fisher
-from recovery import compare_histories, recovery_times_over_seeds
+from recovery import compare_histories, growth_recovery_times, recovery_times_over_seeds
 
 # Ordinal blue ramp, light (mild event) to dark (extreme event).
 EVENT_COLORS = ["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
@@ -315,6 +322,94 @@ def make_length_figure(normal_size: int, mu: float, sample_size: int) -> None:
         print(f"{depth:>10} {length:>6} {length / (2 * depth):>8g} {cells[0]:>12} {cells[1]:>12}")
 
 
+def plot_recovery_vs_growth_size(times: dict[str, np.ndarray], end_sizes: list[int],
+                                 start_size: int, gens_growth: int, title: str,
+                                 path: str) -> None:
+    """
+    Plots recovery time against the population size after growth, in generations
+    (left) and in units of the new size (right), for Tajima's D and pi, and saves
+    the figure.
+    Parameters:
+    - times (dict[str, np.ndarray]): The output of growth_recovery_times.
+    - end_sizes (list[int]): The population sizes after growth, one per column of times.
+    - start_size (int): The population size before growth.
+    - gens_growth (int): The number of generations the growth lasted.
+    - title (str): The figure title.
+    - path (str): Where to save the figure.
+    """
+    fig, (ax_gens, ax_scaled) = plt.subplots(1, 2, figsize=(11, 5), facecolor=SURFACE)
+    sizes = np.array(end_sizes)
+
+    for ax, scale, ylabel in [
+            (ax_gens, np.ones(len(sizes)), "recovery time (generations since growth began)"),
+            (ax_scaled, sizes, "recovery time ÷ population size after growth")]:
+        style_axes(ax)
+        for stat in ["D", "pi"]:
+            color = STAT_COLORS[stat]
+            scaled = times[stat] / scale
+            for row in scaled:
+                ax.scatter(sizes, row, s=14, color=color, alpha=0.35, linewidths=0)
+            means = np.nanmean(scaled, axis=0)
+            ax.plot(sizes, means, color=color, linewidth=2, marker="o", markersize=6,
+                    label=f"{STAT_LABELS[stat]} (average of {len(scaled)} seeds)")
+        ax.set_xscale("log")
+        ax.set_xticks(end_sizes)
+        ax.set_xticklabels([f"{size}\n({size / start_size:g}×)" for size in end_sizes])
+        ax.minorticks_off()
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel(f"population size after growth (from N = {start_size}, log scale)",
+                      color=TEXT_PRIMARY, fontsize=10)
+        ax.set_ylabel(ylabel, color=TEXT_PRIMARY, fontsize=10)
+
+    ax_gens.legend(frameon=False, fontsize=8.5, labelcolor=TEXT_PRIMARY, loc="upper left")
+    fig.suptitle(title, x=0.07, ha="left", fontsize=12, color=TEXT_PRIMARY)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def make_growth_size_figure(start_size: int, mu: float, sample_size: int,
+                            gens_growth: int) -> None:
+    """
+    Runs the growth-size experiment over several seeds, then saves the figure and CSV.
+    Each growth size is followed for 10 times its new size in generations, and
+    compared with a steady control at the new size.
+    Parameters:
+    - start_size (int): The population size before growth.
+    - mu (float): The mutation rate per gene copy per generation.
+    - sample_size (int): The number of sampled sequences n.
+    - gens_growth (int): The number of generations the growth lasts.
+    """
+    end_sizes = [300, 400, 600, 1000]
+    seeds = [120, 121, 122, 123, 124]
+    total_gens = {end_size: 10 * end_size for end_size in end_sizes}
+    record_every = {end_size: end_size // 20 for end_size in end_sizes}
+    times = growth_recovery_times(start_size, end_sizes, gens_growth, total_gens, mu,
+                                  sample_size, num_trials=200, record_every=record_every,
+                                  seeds=seeds)
+
+    title = (f"How long {gens_growth} generations of growth affect Tajima's D and π "
+             "(200 populations per seed)")
+    path = os.path.join("figures", "recovery_vs_growth_size.png")
+    plot_recovery_vs_growth_size(times, end_sizes, start_size, gens_growth, title, path)
+    csv_path = os.path.join("figures", "recovery_vs_growth_size.csv")
+    save_recovery_csv(times, [(size,) for size in end_sizes], ["end_size"], seeds, csv_path)
+    print(f"Saved {path} and {csv_path}")
+
+    print(f"{'end size':>8} {'D recovers':>16} {'pi recovers':>16}   (mean ± SD over seeds)")
+    for j, end_size in enumerate(end_sizes):
+        cells = []
+        for stat in ["D", "pi"]:
+            column = times[stat][:, j]
+            missing = int(np.sum(np.isnan(column)))
+            cell = f"{np.nanmean(column):.0f} ± {np.nanstd(column):.0f}"
+            if missing:
+                cell += f" ({missing} n.r.)"
+            cells.append(cell)
+        print(f"{end_size:>8} {cells[0]:>16} {cells[1]:>16}")
+    print("n.r. = not recovered within 10 × the new size generations")
+
+
 def main():
     normal_size, mu, sample_size = 200, 0.0125, 20
     event_gens, gens_after = 20, 1000
@@ -339,16 +434,18 @@ def main():
                    "Tajima's D and π over time"),
     }
 
-    options = list(figures) + ["severity", "length"]
+    options = list(figures) + ["severity", "length", "growthsize"]
     chosen = sys.argv[1:] or options
     if any(name not in options for name in chosen):
-        sys.exit("usage: python3 plots.py [crash | growth | severity | length]")
+        sys.exit("usage: python3 plots.py [crash | growth | severity | length | growthsize]")
 
     os.makedirs("figures", exist_ok=True)
     if "severity" in chosen:
         make_severity_figure(normal_size, mu, sample_size, event_gens)
     if "length" in chosen:
         make_length_figure(normal_size, mu, sample_size)
+    if "growthsize" in chosen:
+        make_growth_size_figure(normal_size, mu, sample_size, event_gens)
     for name in [name for name in chosen if name in figures]:
         wright_fisher.set_seed(120)
         histories, title = figures[name]

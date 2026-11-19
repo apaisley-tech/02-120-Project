@@ -30,21 +30,25 @@ RecoveryTimes(gens, event, steady, numSE)
         recovery[statistic] ← RecoveryTime(gens, event, steady, tolerances)
     return recovery
 
-CompareHistories(normalSize, histories, mu, n, numTrials, recordEvery, numSE)
-    (Every history must have the same length; the steady control is simulated once.)
+CompareHistories(normalSize, histories, mu, n, numTrials, recordEvery, numSE, controlSize)
+    (Every history must have the same length; the steady control is simulated once.
+    controlSize is normalSize unless given: after growth, the control is a population
+    that has always been at the new, larger size.)
     burnIn ← 10 * normalSize copies of normalSize
+    controlBurnIn ← 10 * controlSize copies of controlSize
     gens ← 0, recordEvery, 2 * recordEvery, ... up to the history length
-    steady ← AverageSampleStats(burnIn + normalSize copies, ...) at the end of burnIn + gens
+    steady ← AverageSampleStats(controlBurnIn + controlSize copies, ...)
+             at the end of controlBurnIn + gens
     for every label, eventSizes in histories
         event ← AverageSampleStats(burnIn + eventSizes, ...) at the same generations
         recovery ← RecoveryTimes(gens, event, steady, numSE)
         results[label] ← gens, event, steady, recovery
     return results
 
-RecoveryTimesOverSeeds(normalSize, histories, mu, n, numTrials, recordEvery, seeds)
+RecoveryTimesOverSeeds(normalSize, histories, mu, n, numTrials, recordEvery, seeds, controlSize)
     for every seed in seeds
         SetSeed(seed)
-        results ← CompareHistories(normalSize, histories, ...)
+        results ← CompareHistories(normalSize, histories, ..., controlSize)
         for every statistic and every history
             times[statistic][seed][history] ← the recovery time in results
                                               (undefined if not recovered)
@@ -52,6 +56,16 @@ RecoveryTimesOverSeeds(normalSize, histories, mu, n, numTrials, recordEvery, see
 
 CompareToSteady(normalSize, eventSizes, mu, n, numTrials, recordEvery, numSE)
     return CompareHistories(normalSize, {one label: eventSizes}, ...) for that label
+
+GrowthRecoveryTimes(startSize, endSizes, gensGrowth, totalGens, mu, n, numTrials,
+                    recordEvery, seeds)
+    for every endSize in endSizes
+        history ← MakeGrowthHistory(startSize, endSize, 0, gensGrowth,
+                                    totalGens[endSize] - gensGrowth)
+        times for endSize ← RecoveryTimesOverSeeds(startSize, {endSize: history}, ...,
+                                                   recordEvery[endSize], seeds,
+                                                   controlSize = endSize)
+    return the times for every endSize side by side
 """
 
 import numpy as np
@@ -135,15 +149,19 @@ def compare_to_steady(normal_size: int, event_sizes: list[int], mu: float,
 
 def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: float,
                       sample_size: int, num_trials: int, record_every: int,
-                      num_se: float = 4) -> dict[str, dict]:
+                      num_se: float = 4, control_size: int | None = None) -> dict[str, dict]:
     """
     Runs compare_to_steady for several events that share one steady control,
     so the control only needs to be simulated once.
     Parameters:
-    - normal_size (int): The population size during the burn-in and in the control.
+    - normal_size (int): The population size during the events' burn-in, and in
+      the control unless control_size is given.
     - histories (dict): A label and the population size in each
       generation after the burn-in, for every event. All must have the same length.
     - mu, sample_size, num_trials, record_every, num_se: As in compare_to_steady.
+    - control_size (int | None): The size of the steady control, which gets its own
+      burn-in at that size. Defaults to normal_size. After growth, set it to the new
+      size, so recovery means looking like a population that was always that large.
     Returns:
     - dict[str, dict]: The compare_to_steady result for each label.
     """
@@ -152,11 +170,16 @@ def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: flo
         raise ValueError("Every history must have the same number of generations.")
     num_gens = lengths.pop()
 
+    if control_size is None:
+        control_size = normal_size
+
     burn_in = [normal_size] * (10 * normal_size)
+    control_burn_in = [control_size] * (10 * control_size)
     gens = list(range(0, num_gens + 1, record_every))
     record_gens = [len(burn_in) + t for t in gens]
-    steady_trials = sample_stats_per_trial(burn_in + [normal_size] * num_gens, mu,
-                                           sample_size, num_trials, record_gens)
+    control_record_gens = [len(control_burn_in) + t for t in gens]
+    steady_trials = sample_stats_per_trial(control_burn_in + [control_size] * num_gens, mu,
+                                           sample_size, num_trials, control_record_gens)
     steady = summarize_trials(steady_trials)
 
     results = {}
@@ -173,7 +196,8 @@ def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: flo
 
 def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
                               sample_size: int, num_trials: int, record_every: int,
-                              seeds: list[int]) -> dict[str, np.ndarray]:
+                              seeds: list[int],
+                              control_size: int | None = None) -> dict[str, np.ndarray]:
     """
     Measures recovery times for several events, repeating the whole experiment
     with several random seeds to show how much the times vary.
@@ -183,6 +207,7 @@ def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
       the burn-in, for every event. All must have the same length.
     - mu, sample_size, num_trials, record_every: As in compare_to_steady.
     - seeds (list[int]): The random seeds, one per repeat of the experiment.
+    - control_size (int | None): As in compare_histories.
     Returns:
     - dict[str, np.ndarray]: For each of "S", "pi", "theta_w" and "D", an array with
       one row per seed and one column per history (in the order of histories),
@@ -194,12 +219,49 @@ def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
     for i, seed in enumerate(seeds):
         wright_fisher.set_seed(seed)
         results = compare_histories(normal_size, histories, mu, sample_size, num_trials,
-                                    record_every)
+                                    record_every, control_size=control_size)
         for j, label in enumerate(histories):
             for stat, gen in results[label]["recovery"].items():
                 if gen is not None:
                     times[stat][i, j] = gen
     return times
+
+
+def growth_recovery_times(start_size: int, end_sizes: list[int], gens_growth: int,
+                          total_gens: dict[int, int], mu: float, sample_size: int,
+                          num_trials: int, record_every: dict[int, int],
+                          seeds: list[int]) -> dict[str, np.ndarray]:
+    """
+    Measures how long growth of different sizes leaves a mark, over several seeds.
+    Each growing population is compared with a steady control that has always been
+    at the new size, so it has recovered once it looks like a population that was
+    always that large. Bigger populations take longer to settle, so each growth size
+    can be followed for a different number of generations.
+    Parameters:
+    - start_size (int): The population size before growth.
+    - end_sizes (list[int]): The population size after growth, one per experiment.
+    - gens_growth (int): The number of generations over which the population grows.
+    - total_gens (dict[int, int]): For each end size, how many generations to follow
+      after growth begins.
+    - mu, sample_size, num_trials: As in compare_to_steady.
+    - record_every (dict[int, int]): For each end size, how many generations apart to sample.
+    - seeds (list[int]): The random seeds, one per repeat of the experiment.
+    Returns:
+    - dict[str, np.ndarray]: As in recovery_times_over_seeds, with one column per end
+      size: the recovery time in generations since growth began, or nan if it had
+      not recovered by the end.
+    """
+    columns = []
+    for end_size in end_sizes:
+        history = wright_fisher.make_growth_history(start_size, end_size, gens_before=0,
+                                                    gens_growth=gens_growth,
+                                                    gens_after=total_gens[end_size] - gens_growth)
+        columns.append(recovery_times_over_seeds(start_size, {end_size: history}, mu,
+                                                 sample_size, num_trials,
+                                                 record_every[end_size], seeds,
+                                                 control_size=end_size))
+    return {stat: np.hstack([column[stat] for column in columns])
+            for stat in ["S", "pi", "theta_w", "D"]}
 
 
 def main():

@@ -55,7 +55,35 @@ Twenty generations of rapid growth from N = 200:
 - π rises slowly toward the larger population's new equilibrium, 4N·μ, which takes
   about 4N generations to reach.
 
-Recovery times vary by up to about a hundred generations from one random seed to the next,
+How long does growth leave a mark? After growth the population stays large, so it can never
+look like the old steady population again (its π settles permanently higher). Instead, each
+grown population is compared with a steady control that has *always* been at the new size:
+it has recovered once it looks like it was always that large. Growth from N = 200 to 300,
+400, 600 and 1000 over 20 generations, followed for 10 × the new size (5 random seeds of
+200 populations each; times also saved in `figures/recovery_vs_growth_size.csv`):
+
+![Recovery time against population size after growth](figures/recovery_vs_growth_size.png)
+
+| Grow to | D recovers (generations, mean ± SD) | π recovers (generations, mean ± SD) |
+|---|---|---|
+| 300 (1.5×) | 753 ± 162 | 1107 ± 147 |
+| 400 (2×) | 1536 ± 160 | 1864 ± 89 |
+| 600 (3×) | 3168 ± 826 | 3450 ± 268 |
+| 1000 (5×) | 5570 ± 250 | 6520 ± 485 |
+
+- Growth leaves a mark far longer than a crash. Even the most severe crash recovered within
+  about 950 generations; growth to N = 1000 takes about 5,600 (D) and 6,500 (π).
+- The new size sets the pace. The missing variation fills in by a factor of about
+  (1 − 1/2N) per generation at the new size N, so a large population takes a long time to
+  build up the variation it should have. Recovery takes about 2.5–6.5 × the new size.
+- Bigger jumps take longer even after dividing by the new size (right panel). Part of this is
+  biology (a bigger jump leaves a bigger gap to fill), and part is measurement: larger
+  populations have more variable sites, so their averages are less noisy and smaller
+  leftover gaps can be detected.
+- As after crashes, π takes longer to recover than D.
+
+Recovery times vary by up to about a hundred generations from one random seed to the next
+after crashes (more after growth, up to several hundred),
 and depend on the number of simulated populations (more populations can detect smaller
 leftover differences), so they should be compared at the same settings.
 
@@ -96,11 +124,12 @@ steady control instead. The app shows Tajima's limits alongside for comparison.
 
 | Command | What it does | Time |
 |---|---|---|
-| `.venv/bin/python plots.py` | Makes all four figures in `figures/` | ~8 min |
+| `.venv/bin/python plots.py` | Makes all five figures in `figures/` | ~33 min |
 | `.venv/bin/python plots.py crash` | Only the crash figure | ~15 s |
 | `.venv/bin/python plots.py growth` | Only the growth figure | ~50 s |
 | `.venv/bin/python plots.py severity` | Only the recovery time vs. crash size figure, plus its CSV | ~3 min |
 | `.venv/bin/python plots.py length` | Only the crash length vs. depth figure, plus its CSV | ~4 min |
+| `.venv/bin/python plots.py growthsize` | Only the recovery time vs. growth size figure, plus its CSV | ~25 min |
 | `.venv/bin/python recovery.py` | Prints recovery times for crashes of several sizes | ~20 s |
 | `.venv/bin/python diversity.py` | Prints average Tajima's D over time for steady, crash and growth | ~5 s |
 | `.venv/bin/python infinite_sites.py` | Runs one population to equilibrium and prints its variation | <1 s |
@@ -112,7 +141,7 @@ steady control instead. The app shows Tajima's limits alongside for comparison.
 .venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery
 ```
 
-The 43 tests take about 10 seconds. Besides unit tests with hand-worked answers, they check
+The 46 tests take about 20 seconds. Besides unit tests with hand-worked answers, they check
 the simulation against population-genetics theory:
 
 - A neutral allele fixes with probability equal to its starting frequency.
@@ -122,6 +151,7 @@ the simulation against population-genetics theory:
 - Tajima's D is positive just after a crash and negative after rapid growth.
 - The 5% limits of Tajima's test are near ±1.96 for large samples and widen at stricter levels.
 - Limits taken from one set of steady populations flag about 5% of a new set.
+- After growth, π recovers against a control at the new size but never against one at the old size.
 
 ## How it works
 
@@ -130,7 +160,7 @@ the simulation against population-genetics theory:
 | `wright_fisher.py` | One locus, two alleles: one generation of drift, population size histories (`make_crash_history`, `make_growth_history`), fixation probability. Also holds the shared random number generator (`set_seed`). |
 | `infinite_sites.py` | Many sites under the infinite-sites model: every mutation hits a new site. `sites_generation_many` advances many independent populations in one NumPy call. |
 | `diversity.py` | Samples n sequences without replacement and computes S, π, θ_W and Tajima's D. `average_sample_stats` averages them over many populations at chosen generations; `sample_stats_per_trial` keeps each population's values. `tajima_critical_values` gives the limits of Tajima's test, and `control_limits` the limits from simulated steady populations. |
-| `recovery.py` | Compares event populations with one steady control and finds the recovery time: the first generation after which they stay within 4 standard errors of each other. |
+| `recovery.py` | Compares event populations with one steady control and finds the recovery time: the first generation after which they stay within 4 standard errors of each other. The control can be a different size from the starting population (`control_size`), which `growth_recovery_times` uses to compare grown populations with a control at the new size. |
 | `plots.py` | Draws the figures above. |
 | `app.py` | The interactive Streamlit app. |
 
