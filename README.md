@@ -176,17 +176,20 @@ This opens the app in your browser. It has two modes, chosen at the top of the s
 
 **Explore an event.** Pick a steady, crash or growth history in the sidebar
 (normal and event population size, event length, mutation rate, sample size, number of
-populations), then press **Run simulation** (about 5–30 seconds). The app simulates the
+populations), then press **Run simulation** (about 5–30 seconds; a progress bar shows how far
+it has got, and settings that were already simulated come back at once). The app simulates the
 event alongside a steady control and shows:
 
 - **Averages over time:** Tajima's D, π, θ_W and S averaged over the populations, with the
   generation at which the event can no longer be told apart from the control. For π, dotted
   lines show the theory's prediction.
-- **Site frequency spectrum:** the spectrum of the event and the control at any chosen
-  generation, relative to a steady population's (as in the figure above).
+- **Site frequency spectrum:** an animation of the spectrum of the event and the control,
+  relative to a steady population's (as in the figure above). Press **▶ Play** to watch
+  rare variants vanish during a crash and return as the population recovers, or drag the
+  slider. A small chart of population size above it marks the generation shown.
 - **Single samples:** how often one sample from one population has a D outside the middle
-  95% of D values in the steady control, and a histogram of D across populations at any
-  chosen generation.
+  95% of D values in the steady control, and an animated histogram of D across populations
+  over time.
 - **Data:** the numbers behind the charts, including the theory's π.
 
 **Work backwards.** Infers the history from one sample (see above). Either let the app
@@ -194,7 +197,8 @@ simulate a **mystery population** (it picks a random history and shows one sampl
 and singletons; press **Reveal the truth** afterwards), or **enter your own numbers**. The
 app shows the chance of steady, crash and growth, the likely strength (or size after
 growth) and time since the event, and a heat map of the possibilities. The reference table
-takes about a minute to build the first time and is then saved in `inference_cache/`.
+for these settings is included in `inference_cache/`, so this mode starts at once; tables for
+other settings take about a minute to build and are then saved there too.
 
 The simulation lets every site drift independently, as if sites were unlinked. This gives
 the right averages, but D varies less from population to population than Tajima's test
@@ -227,10 +231,10 @@ fewer cores they take longer, but give exactly the same results.
 ## Tests
 
 ```bash
-.venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery test_inference test_app
+.venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery test_inference test_app test_animation
 ```
 
-The 77 tests take about 35 seconds. Besides unit tests with hand-worked answers, they check
+The 86 tests take about 30 seconds. Besides unit tests with hand-worked answers, they check
 the simulation against population-genetics theory:
 
 - A neutral allele fixes with probability equal to its starting frequency.
@@ -248,7 +252,10 @@ the simulation against population-genetics theory:
 - Running seeds in parallel gives exactly the same recovery times as running them one
   after another.
 - The app runs even when a crash leaves fewer gene copies than the usual sample size:
-  the sample size is limited to 2N during a crash (`test_app.py` drives the real app).
+  the sample size is limited to 2N during a crash (`test_app.py` drives the real app), and
+  shows both animations, also when the same settings are run again.
+- Each animation has one frame per recorded generation, fixed axes, and frames that
+  match the simulated numbers.
 - Working backwards finds a recent severe crash and large growth from single samples, and
   gives each kind 1/3 prior odds even though the grid has more crash histories.
 
@@ -263,6 +270,7 @@ the simulation against population-genetics theory:
 | `inference.py` | Works backwards from one sample: builds the reference table (`build_reference_table`, saved in `inference_cache/`), keeps the closest simulated samples (`infer`), summarizes them (`summarize`) and tests the method on samples with known histories (`validate`). |
 | `plots.py` | Draws the figures above. |
 | `app.py` | The interactive Streamlit app. |
+| `animation.py` | Builds the app's animated Plotly charts (the site frequency spectrum and the spread of D over time), with play and pause buttons, a slider and a time marker. |
 
 Each simulation starts with no variation and runs a burn-in of 10N generations at the normal
 size, so variation reaches equilibrium before the crash or growth begins.

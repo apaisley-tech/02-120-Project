@@ -28,8 +28,8 @@ MakeEventHistory(kind, normalSize, eventSize, eventGens, totalGens)
 RunScenario(settings)
     burnIn ← 10 * normalSize copies of normalSize
     gens ← 0, recordEvery, 2 * recordEvery, ... up to totalGens
-    steadyTrials, steadySFS ← SampleStatsAndSFS(burnIn + steady history, ...) with seed      (cached)
-    eventTrials, eventSFS ← SampleStatsAndSFS(burnIn + event history, ...) with seed + 1    (cached)
+    steadyTrials, steadySFS ← SampleStatsAndSFS(burnIn + steady history, ...) with seed      (stored)
+    eventTrials, eventSFS ← SampleStatsAndSFS(burnIn + event history, ...) with seed + 1    (stored)
     steady, event ← the averages of steadyTrials and eventTrials
     recovery ← RecoveryTimes(gens, event, steady)
     theoryPi ← ExpectedSamplePi of each history at the sampled generations
@@ -50,6 +50,7 @@ import streamlit as st
 
 import inference
 import wright_fisher
+from animation import animated_histogram_figure, animated_sfs_figure
 from diversity import (control_limits, harmonic_sums, sample_stats_and_sfs, sfs_ratio,
                        summarize_trials, tajima_critical_values)
 from infinite_sites import expected_sample_pi
@@ -125,58 +126,90 @@ def fraction_significant(d_values: np.ndarray, lower: float, upper: float) -> np
     return significant.mean(axis=0)
 
 
-@st.cache_data(show_spinner=False, max_entries=20)
-def simulate(pop_sizes: tuple[int, ...], mu: float, sample_size: int, num_trials: int,
-             record_gens: tuple[int, ...], seed: int) -> tuple[dict[str, np.ndarray], np.ndarray]:
+@st.cache_resource(show_spinner=False)
+def simulation_store() -> dict:
     """
-    Runs sample_stats_and_sfs with a fixed seed. Streamlit keeps the result, so
-    changing only the event's settings does not re-simulate the steady control.
+    Keeps finished simulations between reruns of the app (and between users). A plain
+    dictionary is used instead of st.cache_data because a simulation moves a progress
+    bar, and st.cache_data would try to replay that bar on later runs, after it is gone.
+    Returns:
+    - dict: The same dictionary on every call: settings -> simulation result.
+    """
+    return {}
+
+
+def simulate(pop_sizes: tuple[int, ...], mu: float, sample_size: int, num_trials: int,
+             record_gens: tuple[int, ...], seed: int,
+             progress=None) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """
+    Runs sample_stats_and_sfs with a fixed seed, or returns the stored result if these
+    settings were already simulated, so changing only the event's settings does not
+    re-simulate the steady control. The 20 most recent results are kept.
     Parameters:
     - pop_sizes, mu, sample_size, num_trials, record_gens: As in sample_stats_and_sfs.
     - seed (int): The random seed to set first.
+    - progress: As in sample_stats_and_sfs; not called for a stored result.
     Returns:
     - tuple[dict[str, np.ndarray], np.ndarray]: The output of sample_stats_and_sfs.
     """
-    wright_fisher.set_seed(seed)
-    return sample_stats_and_sfs(list(pop_sizes), mu, sample_size, num_trials,
-                                list(record_gens))
+    store = simulation_store()
+    key = (pop_sizes, mu, sample_size, num_trials, record_gens, seed)
+    if key not in store:
+        wright_fisher.set_seed(seed)
+        store[key] = sample_stats_and_sfs(list(pop_sizes), mu, sample_size, num_trials,
+                                          list(record_gens), progress=progress)
+        while len(store) > 20:
+            del store[next(iter(store))]  # The oldest result (dicts keep insertion order).
+    return store[key]
 
 
-def run_scenario(settings: dict) -> dict:
+def run_scenario(settings: dict, progress=None) -> dict:
     """
     Simulates the chosen event and a steady control, both after a burn-in of
     10N generations, and compares them.
     Parameters:
     - settings (dict): "kind", "normal_size", "event_size", "event_gens",
       "total_gens", "mu", "sample_size", "num_trials" and "seed".
+    - progress: An optional function called with the share done (0 to 1): the
+      steady control is the first half, the event the second.
     Returns:
     - dict: "gens" (generations since the event began that were sampled),
       "steady_trials" and "event_trials" (each population's values), "steady" and
       "event" (averages from summarize_trials), "recovery" (from recovery_times),
       "steady_sfs" and "event_sfs" (average site frequency spectra, one row per
       sampled generation) and "steady_theory_pi" and "event_theory_pi" (pi
-      predicted by expected_sample_pi at every sampled generation).
+      predicted by expected_sample_pi at every sampled generation), and
+      "event_sizes" (the event's population size in each generation).
     """
     normal_size, total_gens = settings["normal_size"], settings["total_gens"]
     burn_in = [normal_size] * (10 * normal_size)
     gens = list(range(0, total_gens + 1, choose_record_every(total_gens)))
     record_gens = tuple(len(burn_in) + t for t in gens)
-    event_history = make_event_history(settings["kind"], normal_size, settings["event_size"],
-                                       settings["event_gens"], total_gens)
+    event_sizes = make_event_history(settings["kind"], normal_size, settings["event_size"],
+                                     settings["event_gens"], total_gens)
     common = (settings["mu"], settings["sample_size"], settings["num_trials"], record_gens)
+
+    def halves(offset: float):
+        # Maps one simulation's progress onto its half of the bar.
+        return None if progress is None else (lambda share: progress(offset + share / 2))
 
     # Different seeds keep the event and control populations independent.
     steady_history = burn_in + [normal_size] * total_gens
-    event_history = burn_in + event_history
-    steady_trials, steady_sfs = simulate(tuple(steady_history), *common, settings["seed"])
-    event_trials, event_sfs = simulate(tuple(event_history), *common, settings["seed"] + 1)
+    event_history = burn_in + event_sizes
+    steady_trials, steady_sfs = simulate(tuple(steady_history), *common, settings["seed"],
+                                         progress=halves(0))
+    if progress is not None:
+        progress(0.5)  # In case the control was already stored and did not run.
+    event_trials, event_sfs = simulate(tuple(event_history), *common, settings["seed"] + 1,
+                                       progress=halves(0.5))
     steady, event = summarize_trials(steady_trials), summarize_trials(event_trials)
     mu, record = settings["mu"], list(record_gens)
     return {"gens": gens, "steady_trials": steady_trials, "event_trials": event_trials,
             "steady": steady, "event": event, "recovery": recovery_times(gens, event, steady),
             "steady_sfs": steady_sfs, "event_sfs": event_sfs,
             "steady_theory_pi": expected_sample_pi(steady_history, mu)[record],
-            "event_theory_pi": expected_sample_pi(event_history, mu)[record]}
+            "event_theory_pi": expected_sample_pi(event_history, mu)[record],
+            "event_sizes": event_sizes}
 
 
 def color_scale(event_label: str) -> alt.Scale:
@@ -350,87 +383,15 @@ def significance_chart(result: dict, lower: float, upper: float, settings: dict,
     return (event_band(settings) + five + lines).properties(height=260)
 
 
-def histogram_chart(result: dict, index: int, lower: float, upper: float,
-                    event_label: str) -> alt.Chart:
+def event_length(settings: dict) -> int:
     """
-    Draws the spread of Tajima's D across populations at one recorded generation,
-    one panel for the event and one for the control, with the limits marked.
+    Gives how many generations the event lasted.
     Parameters:
-    - result (dict): The output of run_scenario.
-    - index (int): Which recorded generation to show.
-    - lower, upper (float): The limits of D from control_limits.
-    - event_label (str): The legend name of the event population.
+    - settings (dict): As in run_scenario.
     Returns:
-    - alt.Chart: Two histograms sharing the D axis.
+    - int: The event's length, or 0 for a steady history.
     """
-    values = {label: result[key]["D"][:, index]
-              for label, key in [(event_label, "event_trials"), ("steady control", "steady_trials")]}
-    finite = np.concatenate([v[~np.isnan(v)] for v in values.values()])
-    low = min(lower, finite.min()) if finite.size else lower
-    high = max(upper, finite.max()) if finite.size else upper
-    edges = np.linspace(np.floor(low * 4) / 4, np.ceil(high * 4) / 4,
-                        int(round((np.ceil(high * 4) - np.floor(low * 4)))) + 1)
-
-    frames = []
-    for label, v in values.items():
-        counts, _ = np.histogram(v[~np.isnan(v)], bins=edges)
-        frames.append(pd.DataFrame({"start": edges[:-1], "end": edges[1:], "count": counts,
-                                    "population": label}))
-    frame = pd.concat(frames)
-    x = alt.X("start:Q", title="Tajima's D of one sample",
-              scale=alt.Scale(domain=[edges[0], edges[-1]], nice=False))
-    bars = alt.Chart().mark_bar(stroke="white", strokeWidth=1, cornerRadiusTopLeft=2,
-                                cornerRadiusTopRight=2).encode(
-        x=x, x2="end:Q", y=alt.Y("count:Q", title="populations"),
-        color=alt.Color("population:N", scale=color_scale(event_label), legend=None),
-        tooltip=["population", alt.Tooltip("start:Q", title="D from"),
-                 alt.Tooltip("end:Q", title="D to"), "count"],
-    )
-    limits = alt.Chart(pd.DataFrame({"x": [lower, upper]})).mark_rule(
-        color="#52514e", strokeDash=[2, 3]).encode(x="x:Q")
-    return alt.layer(bars, limits, data=frame).properties(height=130).facet(
-        row=alt.Row("population:N", title=None, sort=[event_label, "steady control"],
-                    header=alt.Header(labelAngle=0, labelAlign="left", labelOrient="top")))
-
-
-def sfs_chart(result: dict, index: int, event_label: str) -> alt.Chart:
-    """
-    Draws the shape of the site frequency spectrum at one recorded generation for
-    the event and the control, relative to a steady population.
-    Parameters:
-    - result (dict): The output of run_scenario.
-    - index (int): Which recorded generation to show.
-    - event_label (str): The legend name of the event population.
-    Returns:
-    - alt.Chart: One line per population against i, on a log scale, with a
-      dashed reference line at 1.
-    """
-    frames = []
-    for label, key in [(event_label, "event_sfs"), ("steady control", "steady_sfs")]:
-        spectrum = result[key][index]
-        frames.append(pd.DataFrame({
-            "i": np.arange(1, len(spectrum) + 1), "ratio": np.round(sfs_ratio(spectrum), 3),
-            "sites": np.round(spectrum, 2), "population": label}))
-    frame = pd.concat(frames).dropna()
-    if frame.empty:
-        return alt.Chart(pd.DataFrame()).mark_point()
-    low = min(0.25, frame["ratio"][frame["ratio"] > 0].min())
-    high = max(4, frame["ratio"].max())
-    lines = alt.Chart(frame).mark_line(strokeWidth=2, point=True).encode(
-        x=alt.X("i:Q", title="sequences carrying the mutant, i",
-                scale=alt.Scale(domain=[1, int(frame["i"].max())], nice=False),
-                axis=alt.Axis(tickMinStep=1)),
-        y=alt.Y("ratio:Q", title="share of variable sites ÷ steady share",
-                scale=alt.Scale(type="log", domain=[low, high])),
-        color=alt.Color("population:N", scale=color_scale(event_label), title=None,
-                        legend=alt.Legend(orient="top")),
-        strokeDash=alt.StrokeDash("population:N", scale=dash_scale(event_label), legend=None),
-        tooltip=["population", "i", alt.Tooltip("sites:Q", title="average sites"),
-                 alt.Tooltip("ratio:Q", title="× steady share")],
-    )
-    one = alt.Chart(pd.DataFrame({"y": [1]})).mark_rule(
-        color="#52514e", strokeDash=[2, 3]).encode(y="y:Q")
-    return (one + lines).properties(height=320)
+    return 0 if settings["kind"] == "steady" else settings["event_gens"]
 
 
 def describe_recovery(gen: int | None, total_gens: int) -> str:
@@ -526,6 +487,9 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
 
     lower, upper = control_limits(result["steady_trials"]["D"])
     tajima_lower, tajima_upper = tajima_critical_values(n)
+    # The animations start at the end of the event (the start, for a steady history).
+    start = result["gens"].index(min(result["gens"],
+                                     key=lambda g: abs(g - event_length(settings))))
     tab_avg, tab_sfs, tab_single, tab_data = st.tabs(
         ["Averages over time", "Site frequency spectrum", "Single samples", "Data"])
 
@@ -547,14 +511,13 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
             "site carried by i sequences is expected in proportion to 1/i, so here each "
             "share is divided by that steady share: **1 means steady**. Too few rare "
             "variants (low i below 1) makes D positive; too many makes D negative.")
-        sfs_gen = st.select_slider(
-            "Show the spectrum at generation", result["gens"],
-            value=min(result["gens"], key=lambda g: abs(g - settings["event_gens"])),
-            key="sfs_gen")
-        st.altair_chart(sfs_chart(result, result["gens"].index(sfs_gen), event_label),
-                        width="stretch")
-        st.caption("Averaged over all simulated populations. The steady control wobbles "
-                   "around 1 by chance; wobbles are larger for big i, where sites are few.")
+        st.plotly_chart(animated_sfs_figure(
+            result["gens"], result["event_sizes"], settings["normal_size"], result["event_sfs"],
+            result["steady_sfs"], event_label, event_length(settings), start), width="stretch")
+        st.caption("Press **▶ Play** to watch the spectrum change, or drag the slider. The "
+                   "orange line on the size chart marks the generation shown. Averaged over "
+                   "all simulated populations; the steady control wobbles around 1 by chance, "
+                   "more for big i, where sites are few.")
 
     with tab_single:
         if np.isnan(lower):
@@ -574,10 +537,13 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
             f"{tajima_upper:.2f}. They are wider because they assume the sites are linked "
             "on one stretch of DNA, while this simulation lets every site drift "
             "independently, so D varies less from population to population.")
-        gen = st.select_slider("Show the spread of D at generation", result["gens"],
-                               value=min(result["gens"], key=lambda g: abs(g - settings["event_gens"])))
-        st.altair_chart(histogram_chart(result, result["gens"].index(gen), lower, upper,
-                                        event_label), width="stretch")
+        st.markdown("**The spread of D across populations over time.** Press **▶ Play**: "
+                    "the dotted lines are the steady control's 95% range, and samples "
+                    "beyond them look unusual.")
+        st.plotly_chart(animated_histogram_figure(
+            result["gens"], result["event_sizes"], settings["normal_size"],
+            result["event_trials"]["D"], result["steady_trials"]["D"], lower, upper,
+            event_label, event_length(settings), start), width="stretch")
 
     with tab_data:
         table = pd.DataFrame({"generation": result["gens"]})
@@ -759,10 +725,12 @@ def main():
     st.altair_chart(history_chart(settings, event_label), width="stretch")
 
     if st.button("Run simulation", type="primary"):
-        with st.spinner("Simulating... (about 5–30 seconds)"):
-            st.session_state["result"] = run_scenario(settings)
-            st.session_state["settings"] = dict(settings)
-            st.session_state["event_label"] = event_label
+        bar = st.progress(0.0, text="Simulating... 0%")
+        st.session_state["result"] = run_scenario(
+            settings, progress=lambda share: bar.progress(share, text=f"Simulating... {share:.0%}"))
+        bar.empty()
+        st.session_state["settings"] = dict(settings)
+        st.session_state["event_label"] = event_label
 
     if "result" not in st.session_state:
         st.info("Press **Run simulation** to see the results.")

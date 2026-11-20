@@ -58,6 +58,13 @@ class TestSampleSizeDuringCrash(unittest.TestCase):
         at.button[0].click().run()
         self.assertEqual([e.value for e in at.exception], [])
         self.assertIn("Single samples", [t.label for t in at.tabs])
+        # The two animations: the site frequency spectrum and the spread of D.
+        self.assertEqual(len(at.get("plotly_chart")), 2)
+        # Running again uses the stored simulations, which must not try to move the
+        # progress bar of the earlier run.
+        at.button[0].click().run()
+        self.assertEqual([e.value for e in at.exception], [])
+        self.assertEqual(len(at.get("plotly_chart")), 2)
 
     def test_smallest_crash_runs(self):
         """

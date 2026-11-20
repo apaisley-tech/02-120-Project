@@ -270,7 +270,8 @@ def sample_stats_per_trial(pop_sizes: list[int], mu: float, sample_size: int,
 
 
 def sample_stats_and_sfs(pop_sizes: list[int], mu: float, sample_size: int, num_trials: int,
-                         record_gens: list[int]) -> tuple[dict[str, np.ndarray], np.ndarray]:
+                         record_gens: list[int],
+                         progress=None) -> tuple[dict[str, np.ndarray], np.ndarray]:
     """
     Runs many simulations that start with no variation and, at chosen generations,
     samples sequences from each one, records S, pi, theta_W and Tajima's D, and
@@ -282,6 +283,8 @@ def sample_stats_and_sfs(pop_sizes: list[int], mu: float, sample_size: int, num_
     - sample_size (int): The number of sampled sequences n.
     - num_trials (int): The number of independent simulations.
     - record_gens (list[int]): The generations (1 to len(pop_sizes)) to sample at.
+    - progress: An optional function, called about 100 times with the share of
+      generations done (0 to 1), for example to move a progress bar.
     Returns:
     - tuple[dict[str, np.ndarray], np.ndarray]: First, keys "S", "pi", "theta_w",
       "D" and "singletons" (sites carried by exactly one sampled sequence), each an
@@ -303,9 +306,12 @@ def sample_stats_and_sfs(pop_sizes: list[int], mu: float, sample_size: int, num_
     a1, _ = harmonic_sums(sample_size)
     num_pairs = sample_size * (sample_size - 1) / 2
 
+    report_every = max(1, len(pop_sizes) // 100)
     freqs, trial_ids = np.empty(0), np.empty(0, dtype=int)
     for t, pop_size in enumerate(pop_sizes, start=1):
         freqs, trial_ids = sites_generation_many(pop_size, freqs, trial_ids, num_trials, mu)
+        if progress is not None and (t % report_every == 0 or t == len(pop_sizes)):
+            progress(t / len(pop_sizes))
         if t in index:
             counts, count_ids = sample_counts_many(freqs, trial_ids, pop_size, sample_size)
             # Add up each trial's sites: S counts them, pi sums their pairwise differences.

@@ -274,6 +274,18 @@ class TestSiteFrequencySpectrum(unittest.TestCase):
         self.assertTrue(np.allclose(stats["singletons"].mean(axis=0), sfs[:, 0]))
         self.assertTrue(np.all(stats["singletons"] <= stats["S"]))
 
+    def test_progress_is_reported_without_changing_results(self):
+        reports = []
+        set_seed(5)
+        stats, _ = sample_stats_and_sfs([30] * 250, 0.05, 8, 20, [100, 250],
+                                        progress=reports.append)
+        set_seed(5)
+        plain, _ = sample_stats_and_sfs([30] * 250, 0.05, 8, 20, [100, 250])
+        self.assertTrue(np.array_equal(stats["pi"], plain["pi"]))
+        self.assertEqual(reports, sorted(reports))
+        self.assertEqual(reports[-1], 1.0)
+        self.assertLessEqual(len(reports), 126)
+
     def test_spectrum_adds_up_to_average_s(self):
         # Every segregating site falls in exactly one class, so the classes add up to S.
         set_seed(5)
