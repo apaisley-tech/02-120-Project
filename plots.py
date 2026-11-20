@@ -3,12 +3,12 @@ Plots how Tajima's D and pi change over time after population crashes or growth
 of different sizes, and how long crashes and growth of different sizes take to
 recover from.
 
-Run with: python3 plots.py [crash | growth | severity | length | growthsize]
-With no argument, all five figures are made. They are saved to
+Run with: python3 plots.py [crash | growth | severity | length | growthsize | sfs | inference]
+With no argument, all seven figures are made. They are saved to
 figures/crash_recovery.png, figures/growth_recovery.png,
-figures/recovery_vs_crash_size.png, figures/recovery_vs_crash_strength.png and
-figures/recovery_vs_growth_size.png; the severity, length and growthsize options
-also save their recovery times to a CSV file with the same name.
+figures/recovery_vs_crash_size.png, figures/recovery_vs_crash_strength.png,
+figures/recovery_vs_growth_size.png, figures/sfs.png and figures/inference.png; the
+severity, length and growthsize options also save their recovery times to a CSV file with the same name.
 
 Pseudocode
 
@@ -17,6 +17,12 @@ PlotRecovery(results, eventGens)
     in each panel, draw the steady control as a gray dashed line and one line
     per event, darker for more extreme events
     shade the generations the event lasted
+    on the pi panel, draw ExpectedSamplePi for every history as a dotted line
+
+PlotSFS(ratios)
+    in one panel for a crash and one for growth
+        draw a dashed line at 1 (the steady shape)
+        for every time, plot SFSRatio of the average spectrum against i = 1 to n - 1
 
 PlotRecoveryVsCrashSize(times, crashSizes)
     for D and for pi
@@ -48,6 +54,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import wright_fisher
+import inference
+from diversity import sample_stats_and_sfs, sfs_ratio
+from infinite_sites import expected_sample_pi
 from recovery import compare_histories, growth_recovery_times, recovery_times_over_seeds
 
 # Ordinal blue ramp, light (mild event) to dark (extreme event).
@@ -79,7 +88,8 @@ def style_axes(ax: plt.Axes) -> None:
 
 
 def plot_recovery(results: dict[str, dict], normal_size: int, event_name: str,
-                  event_gens: int, theta: float, title: str, path: str) -> None:
+                  event_gens: int, theta: float, title: str, path: str,
+                  theory: dict[str, np.ndarray] | None = None) -> None:
     """
     Draws Tajima's D and pi over time for each event and saves the figure.
     Parameters:
@@ -90,6 +100,9 @@ def plot_recovery(results: dict[str, dict], normal_size: int, event_name: str,
     - theta (float): The expected pi in the steady control, 4N * mu.
     - title (str): The figure title.
     - path (str): Where to save the figure.
+    - theory (dict[str, np.ndarray] | None): For each label in results, and for
+      "steady", the theoretical average pi at every recorded generation (see
+      expected_sample_pi). Drawn as dotted lines on the pi panel when given.
     """
     fig, (ax_d, ax_pi) = plt.subplots(2, 1, figsize=(9, 7.5), sharex=True,
                                       facecolor=SURFACE)
@@ -106,6 +119,17 @@ def plot_recovery(results: dict[str, dict], normal_size: int, event_name: str,
             ax.plot(result["gens"], result["event"][stat], color=color, linewidth=2,
                     label=event_label)
         ax.set_ylabel(label, color=TEXT_PRIMARY, fontsize=10)
+
+    if theory is not None:
+        gens = steady["gens"]
+        ax_pi.plot(gens, theory["steady"], color=TEXT_PRIMARY, linewidth=1, linestyle=":",
+                   label="theory")
+        for event_label in results:
+            ax_pi.plot(gens, theory[event_label], color=TEXT_PRIMARY, linewidth=1,
+                       linestyle=":")
+        # One legend entry covers every dotted line.
+        ax_pi.legend(handles=[ax_pi.get_lines()[-len(results) - 1]], frameon=False,
+                     fontsize=8.5, labelcolor=TEXT_PRIMARY, loc="lower right")
 
     ax_d.axhline(0, color=TEXT_SECONDARY, linewidth=0.8)
     ax_pi.set_ylim(bottom=0)
@@ -410,6 +434,193 @@ def make_growth_size_figure(start_size: int, mu: float, sample_size: int,
     print("n.r. = not recovered within 10 × the new size generations")
 
 
+def plot_sfs(ratios: dict[str, dict[int, np.ndarray]], titles: dict[str, str],
+             title: str, path: str) -> None:
+    """
+    Plots the shape of the site frequency spectrum at several times for each
+    event, relative to a steady population, and saves the figure.
+    Parameters:
+    - ratios (dict): For each panel name, the sfs_ratio at each generation since
+      the event began, earliest first.
+    - titles (dict[str, str]): The heading of each panel.
+    - title (str): The figure title.
+    - path (str): Where to save the figure.
+    """
+    fig, axes = plt.subplots(1, len(ratios), figsize=(11, 4.6), sharey=True,
+                             facecolor=SURFACE)
+    for ax, (name, by_gen) in zip(axes, ratios.items()):
+        style_axes(ax)
+        ax.axhline(1, color=STEADY_COLOR, linewidth=1.5, linestyle="--",
+                   label="steady shape")
+        # The first time (before the event) in gray, later times darker blue.
+        colors = [STEADY_COLOR] + EVENT_COLORS
+        for color, (gen, ratio) in zip(colors, by_gen.items()):
+            classes = np.arange(1, len(ratio) + 1)
+            ax.plot(classes, ratio, color=color, linewidth=2, marker="o", markersize=3.5,
+                    label=f"generation {gen}" if gen else "before the event")
+        ax.set_yscale("log")
+        ax.set_xlim(0.5, len(ratio) + 0.5)
+        ax.set_xticks([1, 5, 10, 15, len(ratio)])
+        ax.set_title(titles[name], loc="left", fontsize=10, color=TEXT_PRIMARY)
+        ax.set_xlabel("sequences carrying the mutant, i (of n = "
+                      f"{len(ratio) + 1})", color=TEXT_PRIMARY, fontsize=10)
+    axes[0].set_ylabel("share of variable sites ÷ steady share", color=TEXT_PRIMARY,
+                       fontsize=10)
+    axes[0].set_yticks([0.25, 0.5, 1, 2, 4])
+    axes[0].yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
+    axes[0].yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+
+    # Both panels use the same times, so one legend under the title serves both.
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="upper left",
+               bbox_to_anchor=(0.06, 0.93), ncol=5, frameon=False, fontsize=8.5,
+               labelcolor=TEXT_PRIMARY)
+    fig.suptitle(title, x=0.07, ha="left", fontsize=12, color=TEXT_PRIMARY)
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def make_sfs_figure(normal_size: int, mu: float, sample_size: int, event_gens: int) -> None:
+    """
+    Simulates one crash and one growth history and plots their site frequency
+    spectra at several times (figures/sfs.png).
+    Parameters:
+    - normal_size (int): The population size before the event.
+    - mu (float): The mutation rate per gene copy per generation.
+    - sample_size (int): The number of sampled sequences n.
+    - event_gens (int): The number of generations the crash or growth lasts.
+    """
+    crash_size, end_size, gens_after = 10, 10 * normal_size, 500
+    histories = {
+        "crash": wright_fisher.make_crash_history(normal_size, crash_size, 0, event_gens,
+                                                  gens_after),
+        "growth": wright_fisher.make_growth_history(normal_size, end_size, 0, event_gens,
+                                                    gens_after),
+    }
+    titles = {"crash": f"Crash to N = {crash_size} for {event_gens} generations",
+              "growth": f"Growth to N = {end_size} over {event_gens} generations"}
+    gens = [0, event_gens, 100, 500]
+    burn_in = [normal_size] * (10 * normal_size)
+
+    ratios = {}
+    for name, sizes in histories.items():
+        wright_fisher.set_seed(120)
+        _, sfs = sample_stats_and_sfs(burn_in + sizes, mu, sample_size, num_trials=500,
+                                      record_gens=[len(burn_in) + t for t in gens])
+        ratios[name] = dict(zip(gens, sfs_ratio(sfs)))
+
+    path = os.path.join("figures", "sfs.png")
+    plot_sfs(ratios, titles, f"Site frequency spectrum after a crash and after growth "
+             f"(N = {normal_size} before)", path)
+    print(f"Saved {path}")
+    for name, by_gen in ratios.items():
+        for gen, ratio in by_gen.items():
+            print(f"  {name}, generation {gen}: singletons {ratio[0]:.2f} × steady, "
+                  f"middle class (i = {sample_size // 2}) {ratio[sample_size // 2 - 1]:.2f} × steady")
+
+
+def plot_inference(results: dict[str, np.ndarray], kept: dict[str, np.ndarray],
+                   truth: tuple[float, float], example: str, title: str, path: str) -> None:
+    """
+    Plots how often one sample reveals the right kind of history, against time
+    since the event, and the inferred crash strength and time for one example.
+    Parameters:
+    - results (dict): The output of inference.validate.
+    - kept (dict): The output of inference.infer for the example sample.
+    - truth (tuple[float, float]): The example's true crash strength and time.
+    - example (str): A description of the example's true history.
+    - title (str): The figure title.
+    - path (str): Where to save the figure.
+    """
+    fig, (ax_rate, ax_post) = plt.subplots(1, 2, figsize=(12, 4.8), facecolor=SURFACE,
+                                           gridspec_kw={"width_ratios": [1.15, 1]})
+    style_axes(ax_rate)
+    # 200-generation bins keep at least a few dozen test samples in every point.
+    edges = np.arange(0, 1001, 200)
+    centers = (edges[:-1] + edges[1:]) / 2
+    groups = [(f"{name} crash", (results["kind"] == 1) & (results["strength"] >= low)
+               & (results["strength"] < high), 1, color)
+              for (low, high, name), color in zip(inference.STRENGTH_CLASSES, EVENT_COLORS)]
+    groups.append(("growth", results["kind"] == 2, 2, STAT_COLORS["pi"]))
+    for label, rows, kind, color in groups:
+        rates = [np.mean(results["guess"][rows & (results["time"] >= a) & (results["time"] < b)]
+                         == kind) * 100
+                 if np.any(rows & (results["time"] >= a) & (results["time"] < b)) else np.nan
+                 for a, b in zip(edges[:-1], edges[1:])]
+        ax_rate.plot(centers, rates, color=color, linewidth=2, marker="o", markersize=3.5,
+                     label=label)
+    steady_rate = np.mean(results["guess"][results["kind"] == 0] == 0) * 100
+    ax_rate.axhline(steady_rate, color=STEADY_COLOR, linewidth=1.5, linestyle="--",
+                    label=f"steady samples called steady ({steady_rate:.0f}%)")
+    ax_rate.set_ylim(0, 105)
+    ax_rate.set_xlim(0, 1000)
+    ax_rate.set_xlabel("generations since the event began", color=TEXT_PRIMARY, fontsize=10)
+    ax_rate.set_ylabel("% of single samples given the right kind", color=TEXT_PRIMARY,
+                       fontsize=10)
+    ax_rate.set_title("How long can one sample reveal the past?", loc="left", fontsize=10,
+                      color=TEXT_PRIMARY)
+    ax_rate.legend(frameon=False, fontsize=8, labelcolor=TEXT_PRIMARY, loc="lower left")
+
+    # The example: weight of the kept crash rows over strength and time.
+    crash = kept["kind"] == 1
+    strength = kept["crash_length"][crash] / (2 * kept["crash_size"][crash])
+    levels = np.unique(np.concatenate([strength, [truth[0]]]))
+    time_edges = np.arange(0, 1001, 50)
+    grid = np.zeros((len(levels), len(time_edges) - 1))
+    rows = np.searchsorted(levels, strength)
+    cols = np.clip(np.searchsorted(time_edges, kept["time"][crash], side="right") - 1,
+                   0, len(time_edges) - 2)
+    np.add.at(grid, (rows, cols), kept["weight"][crash])
+    ax_post.set_facecolor(SURFACE)
+    ax_post.pcolormesh(time_edges, np.arange(len(levels) + 1), grid, cmap="Blues",
+                       shading="flat")
+    ax_post.scatter([truth[1]], [np.searchsorted(levels, truth[0]) + 0.5], marker="*", s=180,
+                    color=STAT_COLORS["pi"], edgecolor="white", linewidth=0.8, zorder=3,
+                    label="truth")
+    ax_post.set_yticks(np.arange(len(levels)) + 0.5, [f"{v:g}" for v in levels])
+    ax_post.set_xlabel("generations since the crash began", color=TEXT_PRIMARY, fontsize=10)
+    ax_post.set_ylabel("crash strength, length / (2 × size)", color=TEXT_PRIMARY, fontsize=10)
+    ax_post.set_title(f"One sample: {example}\nP(crash) = {kept['weight'][crash].sum():.2f}; "
+                      "darker = more likely; ★ = truth", loc="left", fontsize=10,
+                      color=TEXT_PRIMARY)
+    ax_post.tick_params(colors=TEXT_SECONDARY, labelsize=9, length=0)
+    for side in ax_post.spines.values():
+        side.set_visible(False)
+
+    fig.suptitle(title, x=0.06, ha="left", fontsize=12, color=TEXT_PRIMARY)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def make_inference_figure(normal_size: int, mu: float, sample_size: int) -> None:
+    """
+    Builds (or loads) the reference table, validates the inference and plots it
+    with one worked example (figures/inference.png).
+    Parameters:
+    - normal_size (int): The population size before any event.
+    - mu (float): The mutation rate per gene copy per generation.
+    - sample_size (int): The number of sampled sequences n.
+    """
+    table = inference.cached_reference_table(normal_size=normal_size, mu=mu,
+                                             sample_size=sample_size)
+    results = inference.validate(table, num_tests=9000)
+    print(inference.describe_validation(results))
+
+    crash_size, length, ago = 20, 20, 200
+    sizes = wright_fisher.make_crash_history(normal_size, crash_size, 0, length, ago - length)
+    observed = inference.observe(sizes, normal_size, mu, sample_size, seed=10_001)
+    kept = inference.infer(observed, table)
+    print(inference.describe(inference.summarize(kept)))
+
+    path = os.path.join("figures", "inference.png")
+    plot_inference(results, kept, (length / (2 * crash_size), ago),
+                   f"crash to N = {crash_size} for {length} generations, {ago} ago",
+                   f"Working backwards from one sample of n = {sample_size} sequences "
+                   f"(N = {normal_size} before)", path)
+    print(f"Saved {path}")
+
+
 def main():
     normal_size, mu, sample_size = 200, 0.0125, 20
     event_gens, gens_after = 20, 1000
@@ -434,10 +645,11 @@ def main():
                    "Tajima's D and π over time"),
     }
 
-    options = list(figures) + ["severity", "length", "growthsize"]
+    options = list(figures) + ["severity", "length", "growthsize", "sfs", "inference"]
     chosen = sys.argv[1:] or options
     if any(name not in options for name in chosen):
-        sys.exit("usage: python3 plots.py [crash | growth | severity | length | growthsize]")
+        sys.exit("usage: python3 plots.py "
+                 "[crash | growth | severity | length | growthsize | sfs | inference]")
 
     os.makedirs("figures", exist_ok=True)
     if "severity" in chosen:
@@ -446,13 +658,24 @@ def main():
         make_length_figure(normal_size, mu, sample_size)
     if "growthsize" in chosen:
         make_growth_size_figure(normal_size, mu, sample_size, event_gens)
+    if "sfs" in chosen:
+        make_sfs_figure(normal_size, mu, sample_size, event_gens)
+    if "inference" in chosen:
+        make_inference_figure(normal_size, mu, sample_size)
     for name in [name for name in chosen if name in figures]:
         wright_fisher.set_seed(120)
         histories, title = figures[name]
         results = compare_histories(normal_size, histories, mu, sample_size, num_trials=200,
                                     record_every=10)
+        # Theory for pi, read off at the same generations as the simulation.
+        burn_in = [normal_size] * (10 * normal_size)
+        record_gens = [len(burn_in) + t for t in next(iter(results.values()))["gens"]]
+        theory = {label: expected_sample_pi(burn_in + sizes, mu)[record_gens]
+                  for label, sizes in histories.items()}
+        theory["steady"] = expected_sample_pi(burn_in + [normal_size] * (event_gens + gens_after),
+                                              mu)[record_gens]
         path = os.path.join("figures", f"{name}_recovery.png")
-        plot_recovery(results, normal_size, name, event_gens, theta, title, path)
+        plot_recovery(results, normal_size, name, event_gens, theta, title, path, theory)
         print(f"Saved {path}")
         for label, result in results.items():
             recovery = {stat: result["recovery"][stat] for stat in ["D", "pi"]}

@@ -17,6 +17,10 @@ A 20-generation crash from N = 200 (200 simulated populations per line):
 - During a crash, D jumps positive (rare variants are lost first). It then drops *below* zero
   and climbs back slowly, as new mutations accumulate in the recovering population.
 - π falls during the crash and takes hundreds of generations to recover.
+- The dotted lines are π predicted by theory alone, with no simulation: each generation
+  at size N keeps a share (1 − 1/2N) of the variation, and mutation adds 2μ
+  (`expected_sample_pi`). The simulated π follows them closely, which is a check that
+  the simulation is right.
 - The more severe the crash, the longer the effect lasts. A 20-generation crash to N = 10
   is still detectable roughly 800 generations later for D and 950 for π.
 
@@ -53,7 +57,7 @@ Twenty generations of rapid growth from N = 200:
 - D turns negative (growth adds many new, rare mutations) and stays negative for over
   1,000 generations. The bigger the growth, the more negative D gets.
 - π rises slowly toward the larger population's new equilibrium, 4N·μ, which takes
-  about 4N generations to reach.
+  about 4N generations to reach. Again it follows the theory (dotted lines) closely.
 
 How long does growth leave a mark? After growth the population stays large, so it can never
 look like the old steady population again (its π settles permanently higher). Instead, each
@@ -82,10 +86,76 @@ it has recovered once it looks like it was always that large. Growth from N = 20
   leftover gaps can be detected.
 - As after crashes, π takes longer to recover than D.
 
+### Why D moves: the site frequency spectrum
+
+Tajima's D compares π, which is driven by variants at middle frequencies, with θ_W, which
+counts every variable site and so is driven by rare ones. The site frequency spectrum shows
+both at once: how many variable sites are carried by 1, 2, ..., n − 1 of the n sampled
+sequences. In a steady population, a site carried by i sequences is expected in
+proportion to 1/i. The figure divides each class's share of variable sites by that steady
+share, so a steady population lies along 1 (500 populations, n = 20):
+
+![Site frequency spectrum at several times after a crash and after growth](figures/sfs.png)
+
+- Before either event, the spectrum lies along 1, as theory predicts.
+- **At the end of a crash** (generation 20), singletons are at about 0.35 × their steady
+  share and common variants at about 2 ×: the crash lost the rare variants first. Too few
+  rare variants makes D positive.
+- **After the crash** (generation 100), the tilt reverses: singletons are *above* their
+  steady share (1.34 ×) and middle frequencies below it. The crash removed most of the old
+  variation, and every new mutation starts as a singleton, so new rare variants make up
+  more of what is left. This is why D dips below zero while the population recovers.
+- **After growth**, singletons climb to 1.8 × their steady share by generation 100 and 2 ×
+  by generation 500, while every other class falls below 1. A large population gains many
+  new mutations each generation, and they have not had time to drift to higher
+  frequencies. This is the negative D.
+
 Recovery times vary by up to about a hundred generations from one random seed to the next
 after crashes (more after growth, up to several hundred),
 and depend on the number of simulated populations (more populations can detect smaller
 leftover differences), so they should be compared at the same settings.
+
+### Working backwards: what happened to this population?
+
+The results above run forwards: given a history, what does variation look like? A real
+study works backwards: it has **one sample** of sequences and asks what happened.
+`inference.py` answers this with Approximate Bayesian Computation (ABC):
+
+1. **Reference table.** Simulate 200 populations for each of 21 histories (steady; crashes
+   to N = 10, 20, 40 or 100 lasting 5, 10, 20 or 40 generations; growth to N = 400, 1000,
+   2000 or 4000 over 20 generations), and sample each one every 10 generations for 1000
+   generations. This gives 424,200 samples whose history is known. The time since the
+   event costs nothing extra: one simulation, sampled at many times, covers them all.
+2. **Compare.** Each sample is summarized by π, S and the number of singletons, which
+   together capture the shape of the site frequency spectrum. Each is divided by its spread
+   among steady samples, so the three are on a common scale.
+3. **Keep the closest.** The 500 reference samples nearest the observed one show which
+   histories could have produced it. Steady, crash and growth start with equal odds.
+
+To test it, 9,000 reference samples (3,000 each of steady, crash and growth) were each
+treated as an observation, and their history was inferred from the rest of the table, after
+removing every sample from the same simulated population so no near-copy was left to find:
+
+![How often one sample reveals the right history, and one worked example](figures/inference.png)
+
+- **Severe crashes are clear; mild ones are invisible.** Crashes of strength above 1 are
+  recognized 98% of the time in the first 300 generations, strong ones (0.4–1) 84%, but
+  moderate (0.1–0.4) and weak (below 0.1) ones only 48% and 34%. A mild crash leaves a sample
+  that looks steady, so a third of truly steady samples are also blamed on mild crashes
+  (66% are called steady).
+- **The crash signal fades** as the population recovers, in line with the recovery times
+  above. **Growth gets easier to see with time** (75% in the first 300 generations, 98%
+  after 600), because the excess of rare variants keeps building.
+- **Strength, not depth or length.** In the worked example (right), the most likely cells
+  are at the true strength, 0.5. The method can estimate the strength
+  length / (2 × crash size), but not the depth and length separately, as the crash
+  strength results above predict.
+- **The uncertainty is honest.** The 90% ranges contain the true crash strength 97% of the
+  time and the true time since the event 92% of the time. Single samples are noisy, though:
+  the typical error in time since a crash is about 220 generations (80 after growth).
+
+Two limits: the reference table assumes the sample was taken with the same N, μ and n,
+and, like the rest of this project, that sites drift independently (see the app section).
 
 ## Setup
 
@@ -102,17 +172,29 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 .venv/bin/streamlit run app.py
 ```
 
-This opens the app in your browser. Pick a steady, crash or growth history in the sidebar
+This opens the app in your browser. It has two modes, chosen at the top of the sidebar.
+
+**Explore an event.** Pick a steady, crash or growth history in the sidebar
 (normal and event population size, event length, mutation rate, sample size, number of
 populations), then press **Run simulation** (about 5–30 seconds). The app simulates the
 event alongside a steady control and shows:
 
 - **Averages over time:** Tajima's D, π, θ_W and S averaged over the populations, with the
-  generation at which the event can no longer be told apart from the control.
+  generation at which the event can no longer be told apart from the control. For π, dotted
+  lines show the theory's prediction.
+- **Site frequency spectrum:** the spectrum of the event and the control at any chosen
+  generation, relative to a steady population's (as in the figure above).
 - **Single samples:** how often one sample from one population has a D outside the middle
   95% of D values in the steady control, and a histogram of D across populations at any
   chosen generation.
-- **Data:** the numbers behind the charts.
+- **Data:** the numbers behind the charts, including the theory's π.
+
+**Work backwards.** Infers the history from one sample (see above). Either let the app
+simulate a **mystery population** (it picks a random history and shows one sample's π, S
+and singletons; press **Reveal the truth** afterwards), or **enter your own numbers**. The
+app shows the chance of steady, crash and growth, the likely strength (or size after
+growth) and time since the event, and a heat map of the possibilities. The reference table
+takes about a minute to build the first time and is then saved in `inference_cache/`.
 
 The simulation lets every site drift independently, as if sites were unlinked. This gives
 the right averages, but D varies less from population to population than Tajima's test
@@ -124,24 +206,31 @@ steady control instead. The app shows Tajima's limits alongside for comparison.
 
 | Command | What it does | Time |
 |---|---|---|
-| `.venv/bin/python plots.py` | Makes all five figures in `figures/` | ~33 min |
+| `.venv/bin/python plots.py` | Makes all seven figures in `figures/` | ~16 min |
 | `.venv/bin/python plots.py crash` | Only the crash figure | ~15 s |
 | `.venv/bin/python plots.py growth` | Only the growth figure | ~50 s |
-| `.venv/bin/python plots.py severity` | Only the recovery time vs. crash size figure, plus its CSV | ~3 min |
-| `.venv/bin/python plots.py length` | Only the crash length vs. depth figure, plus its CSV | ~4 min |
-| `.venv/bin/python plots.py growthsize` | Only the recovery time vs. growth size figure, plus its CSV | ~25 min |
+| `.venv/bin/python plots.py severity` | Only the recovery time vs. crash size figure, plus its CSV | ~1 min |
+| `.venv/bin/python plots.py length` | Only the crash length vs. depth figure, plus its CSV | ~2 min |
+| `.venv/bin/python plots.py growthsize` | Only the recovery time vs. growth size figure, plus its CSV | ~10 min |
+| `.venv/bin/python plots.py sfs` | Only the site frequency spectrum figure | ~25 s |
+| `.venv/bin/python plots.py inference` | Only the working-backwards figure | ~1.5 min (+45 s the first time) |
+| `.venv/bin/python inference.py` | Builds the reference table, infers four mystery populations and prints the validation | ~1 min (+45 s the first time) |
 | `.venv/bin/python recovery.py` | Prints recovery times for crashes of several sizes | ~20 s |
 | `.venv/bin/python diversity.py` | Prints average Tajima's D over time for steady, crash and growth | ~5 s |
 | `.venv/bin/python infinite_sites.py` | Runs one population to equilibrium and prints its variation | <1 s |
 | `.venv/bin/python wright_fisher.py` | Single-locus drift demos | <1 s |
 
+Times are for an 8-core computer. The severity, length and growthsize figures repeat their
+experiment with 5 random seeds, which run at the same time on different CPU cores; with
+fewer cores they take longer, but give exactly the same results.
+
 ## Tests
 
 ```bash
-.venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery
+.venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery test_inference test_app
 ```
 
-The 46 tests take about 20 seconds. Besides unit tests with hand-worked answers, they check
+The 77 tests take about 35 seconds. Besides unit tests with hand-worked answers, they check
 the simulation against population-genetics theory:
 
 - A neutral allele fixes with probability equal to its starting frequency.
@@ -152,15 +241,26 @@ the simulation against population-genetics theory:
 - The 5% limits of Tajima's test are near ±1.96 for large samples and widen at stricter levels.
 - Limits taken from one set of steady populations flag about 5% of a new set.
 - After growth, π recovers against a control at the new size but never against one at the old size.
+- The theory for π (`expected_sample_pi`) equals 4Nμ at equilibrium and matches simulated
+  samples through a crash.
+- In a steady population the site frequency spectrum matches θ/i in every class; just
+  after a crash singletons are too few, and during growth too many.
+- Running seeds in parallel gives exactly the same recovery times as running them one
+  after another.
+- The app runs even when a crash leaves fewer gene copies than the usual sample size:
+  the sample size is limited to 2N during a crash (`test_app.py` drives the real app).
+- Working backwards finds a recent severe crash and large growth from single samples, and
+  gives each kind 1/3 prior odds even though the grid has more crash histories.
 
 ## How it works
 
 | File | Contents |
 |---|---|
 | `wright_fisher.py` | One locus, two alleles: one generation of drift, population size histories (`make_crash_history`, `make_growth_history`), fixation probability. Also holds the shared random number generator (`set_seed`). |
-| `infinite_sites.py` | Many sites under the infinite-sites model: every mutation hits a new site. `sites_generation_many` advances many independent populations in one NumPy call. |
-| `diversity.py` | Samples n sequences without replacement and computes S, π, θ_W and Tajima's D. `average_sample_stats` averages them over many populations at chosen generations; `sample_stats_per_trial` keeps each population's values. `tajima_critical_values` gives the limits of Tajima's test, and `control_limits` the limits from simulated steady populations. |
-| `recovery.py` | Compares event populations with one steady control and finds the recovery time: the first generation after which they stay within 4 standard errors of each other. The control can be a different size from the starting population (`control_size`), which `growth_recovery_times` uses to compare grown populations with a control at the new size. |
+| `infinite_sites.py` | Many sites under the infinite-sites model: every mutation hits a new site. `sites_generation_many` advances many independent populations in one NumPy call. `expected_sample_pi` predicts the average π for any population size history from theory alone. |
+| `diversity.py` | Samples n sequences without replacement and computes S, π, θ_W and Tajima's D. `average_sample_stats` averages them over many populations at chosen generations; `sample_stats_per_trial` keeps each population's values. `tajima_critical_values` gives the limits of Tajima's test, and `control_limits` the limits from simulated steady populations. `sample_stats_and_sfs` also averages the site frequency spectrum, and `sfs_ratio` compares its shape with a steady population's. |
+| `recovery.py` | Compares event populations with one steady control and finds the recovery time: the first generation after which they stay within 4 standard errors of each other. The control can be a different size from the starting population (`control_size`), which `growth_recovery_times` uses to compare grown populations with a control at the new size. `run_in_parallel` runs independent seeds on separate CPU cores; each seed sets its own random numbers, so the results are the same as running them one after another. |
+| `inference.py` | Works backwards from one sample: builds the reference table (`build_reference_table`, saved in `inference_cache/`), keeps the closest simulated samples (`infer`), summarizes them (`summarize`) and tests the method on samples with known histories (`validate`). |
 | `plots.py` | Draws the figures above. |
 | `app.py` | The interactive Streamlit app. |
 

@@ -46,6 +46,7 @@ CompareHistories(normalSize, histories, mu, n, numTrials, recordEvery, numSE, co
     return results
 
 RecoveryTimesOverSeeds(normalSize, histories, mu, n, numTrials, recordEvery, seeds, controlSize)
+    (Seeds share nothing, so they run at the same time on different CPU cores.)
     for every seed in seeds
         SetSeed(seed)
         results ← CompareHistories(normalSize, histories, ..., controlSize)
@@ -67,6 +68,9 @@ GrowthRecoveryTimes(startSize, endSizes, gensGrowth, totalGens, mu, n, numTrials
                                                    controlSize = endSize)
     return the times for every endSize side by side
 """
+
+import os
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
@@ -194,10 +198,70 @@ def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: flo
     return results
 
 
+def run_in_parallel(func, tasks: list, workers: int | None = None) -> list:
+    """
+    Runs func on every task, using several processes (one per CPU core) at once.
+    Each task must set its own random seed, so the results are the same as
+    running the tasks one after another.
+    Parameters:
+    - func: A function defined at the top level of a module (so other processes
+      can find it), taking one task.
+    - tasks (list): The inputs, one per call.
+    - workers (int | None): How many processes to use. None uses every CPU core;
+      1 runs the tasks one after another in this process.
+    Returns:
+    - list: func(task) for every task, in the order of tasks.
+    """
+    if workers is None:
+        workers = os.cpu_count() or 1
+    workers = min(workers, len(tasks))
+    if workers <= 1:
+        return [func(task) for task in tasks]
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(func, tasks))
+
+
+def _recovery_for_seed(task: tuple) -> dict:
+    """
+    Runs one seed's experiment for recovery_times_over_seeds and growth_recovery_times.
+    Parameters:
+    - task (tuple): seed, normal_size, histories, mu, sample_size, num_trials,
+      record_every and control_size, as in recovery_times_over_seeds.
+    Returns:
+    - dict: For each history label, the recovery time of each statistic (None if
+      not recovered).
+    """
+    (seed, normal_size, histories, mu, sample_size, num_trials, record_every,
+     control_size) = task
+    wright_fisher.set_seed(seed)
+    results = compare_histories(normal_size, histories, mu, sample_size, num_trials,
+                                record_every, control_size=control_size)
+    return {label: result["recovery"] for label, result in results.items()}
+
+
+def _times_table(recoveries: list[dict], labels: list) -> dict[str, np.ndarray]:
+    """
+    Turns per-seed recovery times into one array per statistic.
+    Parameters:
+    - recoveries (list[dict]): One _recovery_for_seed result per seed.
+    - labels (list): The history labels, one column each, in order.
+    Returns:
+    - dict[str, np.ndarray]: As in recovery_times_over_seeds.
+    """
+    times = {stat: np.full((len(recoveries), len(labels)), np.nan)
+             for stat in ["S", "pi", "theta_w", "D"]}
+    for i, recovery in enumerate(recoveries):
+        for j, label in enumerate(labels):
+            for stat, gen in recovery[label].items():
+                if gen is not None:
+                    times[stat][i, j] = gen
+    return times
+
+
 def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
                               sample_size: int, num_trials: int, record_every: int,
-                              seeds: list[int],
-                              control_size: int | None = None) -> dict[str, np.ndarray]:
+                              seeds: list[int], control_size: int | None = None,
+                              workers: int | None = None) -> dict[str, np.ndarray]:
     """
     Measures recovery times for several events, repeating the whole experiment
     with several random seeds to show how much the times vary.
@@ -208,29 +272,23 @@ def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
     - mu, sample_size, num_trials, record_every: As in compare_to_steady.
     - seeds (list[int]): The random seeds, one per repeat of the experiment.
     - control_size (int | None): As in compare_histories.
+    - workers (int | None): How many processes run seeds at once (see
+      run_in_parallel). The results do not depend on it.
     Returns:
     - dict[str, np.ndarray]: For each of "S", "pi", "theta_w" and "D", an array with
       one row per seed and one column per history (in the order of histories),
       holding the recovery time in generations since the event began, or nan if
       it had not recovered by the end.
     """
-    times = {stat: np.full((len(seeds), len(histories)), np.nan)
-             for stat in ["S", "pi", "theta_w", "D"]}
-    for i, seed in enumerate(seeds):
-        wright_fisher.set_seed(seed)
-        results = compare_histories(normal_size, histories, mu, sample_size, num_trials,
-                                    record_every, control_size=control_size)
-        for j, label in enumerate(histories):
-            for stat, gen in results[label]["recovery"].items():
-                if gen is not None:
-                    times[stat][i, j] = gen
-    return times
+    tasks = [(seed, normal_size, histories, mu, sample_size, num_trials, record_every,
+              control_size) for seed in seeds]
+    return _times_table(run_in_parallel(_recovery_for_seed, tasks, workers), list(histories))
 
 
 def growth_recovery_times(start_size: int, end_sizes: list[int], gens_growth: int,
                           total_gens: dict[int, int], mu: float, sample_size: int,
                           num_trials: int, record_every: dict[int, int],
-                          seeds: list[int]) -> dict[str, np.ndarray]:
+                          seeds: list[int], workers: int | None = None) -> dict[str, np.ndarray]:
     """
     Measures how long growth of different sizes leaves a mark, over several seeds.
     Each growing population is compared with a steady control that has always been
@@ -246,20 +304,26 @@ def growth_recovery_times(start_size: int, end_sizes: list[int], gens_growth: in
     - mu, sample_size, num_trials: As in compare_to_steady.
     - record_every (dict[int, int]): For each end size, how many generations apart to sample.
     - seeds (list[int]): The random seeds, one per repeat of the experiment.
+    - workers (int | None): As in recovery_times_over_seeds.
     Returns:
     - dict[str, np.ndarray]: As in recovery_times_over_seeds, with one column per end
       size: the recovery time in generations since growth began, or nan if it had
       not recovered by the end.
     """
-    columns = []
+    # Every (end size, seed) pair is its own task, so all CPU cores stay busy.
+    tasks = []
     for end_size in end_sizes:
         history = wright_fisher.make_growth_history(start_size, end_size, gens_before=0,
                                                     gens_growth=gens_growth,
                                                     gens_after=total_gens[end_size] - gens_growth)
-        columns.append(recovery_times_over_seeds(start_size, {end_size: history}, mu,
-                                                 sample_size, num_trials,
-                                                 record_every[end_size], seeds,
-                                                 control_size=end_size))
+        tasks += [(seed, start_size, {end_size: history}, mu, sample_size, num_trials,
+                   record_every[end_size], end_size) for seed in seeds]
+    recoveries = run_in_parallel(_recovery_for_seed, tasks, workers)
+
+    columns = []
+    for j, end_size in enumerate(end_sizes):
+        per_seed = recoveries[j * len(seeds):(j + 1) * len(seeds)]
+        columns.append(_times_table(per_seed, [end_size]))
     return {stat: np.hstack([column[stat] for column in columns])
             for stat in ["S", "pi", "theta_w", "D"]}
 

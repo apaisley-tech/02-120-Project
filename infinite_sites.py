@@ -38,6 +38,15 @@ SitesGenerationMany(popSize, freqs, trialIds, numTrials, mu)
         append numNew sites with frequency 1 / numCopies and trial id j
     return freqs, trialIds
 
+ExpectedSamplePi(popSizes, mu)
+    (Theory, no simulation. Drift multiplies H by (1 - 1/2N); mutation adds 2 * mu.)
+    H ← 0
+    expected[0] ← 0
+    for every generation t with size N = popSizes[t]
+        H ← (1 - 1/2N) * (H + 2 * mu)
+        expected[t] ← H * 2N / (2N - 1)     (a sample compares two different copies)
+    return expected
+
 AverageTotalHeterozygosity(popSizes, mu, numTrials)
     totals ← list of zeros, one per generation
     for numTrials total trials
@@ -145,6 +154,39 @@ def total_heterozygosity(freqs: np.ndarray) -> float:
     - float: The total heterozygosity.
     """
     return float(np.sum(2 * freqs * (1 - freqs)))
+
+
+def expected_sample_pi(pop_sizes: list[int], mu: float) -> np.ndarray:
+    """
+    Predicts the average pi of a sample in every generation from theory alone,
+    for populations that start with no variation.
+
+    Drift in a generation of size N multiplies the expected total heterozygosity H
+    by (1 - 1/2N), and new mutations add 2 * mu (see TestHeterozygosityTheory):
+        H_next = (1 - 1/2N) * (H + 2 * mu)
+    H is the chance that two copies drawn with replacement differ, so a copy can be
+    paired with itself. A sample compares two different copies, which differ with
+    chance H * 2N / (2N - 1). In a steady population this is exactly 4N * mu.
+    Parameters:
+    - pop_sizes (list[int]): The number of diploid individuals in each generation.
+    - mu (float): The mutation rate per gene copy per generation.
+    Returns:
+    - np.ndarray: The expected sample pi after each generation, starting with
+      generation 0 (which is always 0), so entry t belongs to generation t.
+    """
+    if mu < 0:
+        raise ValueError("mu must be non-negative.")
+    if any(pop_size <= 0 for pop_size in pop_sizes):
+        raise ValueError("Population sizes must be positive integers.")
+
+    expected = np.zeros(len(pop_sizes) + 1)
+    heterozygosity = 0.0
+    for t, pop_size in enumerate(pop_sizes, start=1):
+        num_copies = 2 * pop_size
+        heterozygosity = (1 - 1 / num_copies) * (heterozygosity + 2 * mu)
+        # A population of one diploid has 2 copies; 2N - 1 is never 0.
+        expected[t] = heterozygosity * num_copies / (num_copies - 1)
+    return expected
 
 
 def average_total_heterozygosity(pop_sizes: list[int], mu: float,

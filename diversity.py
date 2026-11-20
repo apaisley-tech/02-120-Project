@@ -7,7 +7,8 @@ these counts we compute
 - S, the number of segregating (variable) sites,
 - pi, the average number of differences between two sampled sequences,
 - Watterson's theta, S / a1, where a1 = 1 + 1/2 + ... + 1/(n - 1),
-- Tajima's D, the scaled difference pi - theta_W (Tajima 1989).
+- Tajima's D, the scaled difference pi - theta_W (Tajima 1989),
+- the site frequency spectrum: how many sites have each mutant count 1 to n - 1.
 Under a steady population size, pi and theta_W both estimate 4N * mu, so D is
 about 0. Too few rare variants (after a crash) makes D positive; too many
 (after growth) makes it negative.
@@ -46,6 +47,19 @@ SampleStatsPerTrial(popSizes, mu, n, numTrials, recordGens)
             for every trial j
                 record S, pi, theta_W and D of the counts whose trial id is j
     return the recorded values
+
+SiteFrequencySpectrum(counts, n)
+    for i from 1 to n - 1
+        sfs[i] ← the number of sites with counts = i
+    return sfs
+    (SampleStatsAndSFS is SampleStatsPerTrial that also averages this over the trials
+    at every recorded generation.)
+
+SFSRatio(sfs)
+    a1 ← 1 + 1/2 + ... + 1/(n - 1)
+    for i from 1 to n - 1
+        ratio[i] ← (sfs[i] / sum of sfs) / ((1 / i) / a1)
+    return ratio     (all 1 in a steady population)
 
 AverageSampleStats(popSizes, mu, n, numTrials, recordGens)
     stats ← SampleStatsPerTrial(popSizes, mu, n, numTrials, recordGens)
@@ -194,11 +208,73 @@ def tajimas_d_from_summary(pi, num_segregating, sample_size: int):
         return np.where(num_segregating > 0, difference / np.sqrt(variance), np.nan)
 
 
+def site_frequency_spectrum(counts: np.ndarray, sample_size: int) -> np.ndarray:
+    """
+    Counts how many segregating sites have each possible number of mutant copies.
+    Parameters:
+    - counts (np.ndarray): The mutant count at each segregating site, each from 1 to n - 1.
+    - sample_size (int): The number of sampled sequences n.
+    Returns:
+    - np.ndarray: n - 1 entries; entry i - 1 is the number of sites at which exactly
+      i sampled sequences carry the mutant.
+    """
+    return np.bincount(np.asarray(counts, dtype=int), minlength=sample_size)[1:sample_size]
+
+
+def expected_sfs_shares(sample_size: int) -> np.ndarray:
+    """
+    Gives the share of segregating sites expected in each frequency class in a
+    steady population. There, a site carried by i of the n sequences is expected
+    theta / i times, so the shares are (1 / i) / a1.
+    Parameters:
+    - sample_size (int): The number of sampled sequences n.
+    Returns:
+    - np.ndarray: n - 1 shares that add up to 1, for i = 1 to n - 1.
+    """
+    a1, _ = harmonic_sums(sample_size)
+    return 1 / np.arange(1, sample_size) / a1
+
+
+def sfs_ratio(sfs: np.ndarray) -> np.ndarray:
+    """
+    Compares the shape of site frequency spectra with a steady population's.
+    Parameters:
+    - sfs (np.ndarray): One spectrum per row (or a single spectrum), as from
+      sample_stats_and_sfs.
+    Returns:
+    - np.ndarray: Each class's share of segregating sites divided by its expected
+      share in a steady population. All 1 means a steady shape; below 1 at i = 1
+      means too few rare variants (as after a crash), above 1 too many (as after
+      growth). nan where a spectrum has no sites at all.
+    """
+    sfs = np.asarray(sfs, dtype=float)
+    totals = sfs.sum(axis=-1, keepdims=True)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        shares = np.where(totals > 0, sfs / totals, np.nan)
+    return shares / expected_sfs_shares(sfs.shape[-1] + 1)
+
+
 def sample_stats_per_trial(pop_sizes: list[int], mu: float, sample_size: int,
                            num_trials: int, record_gens: list[int]) -> dict[str, np.ndarray]:
     """
     Runs many simulations that start with no variation and, at chosen generations,
     samples sequences from each one and records S, pi, theta_W and Tajima's D.
+    (This is sample_stats_and_sfs without the site frequency spectrum.)
+    Parameters:
+    - pop_sizes, mu, sample_size, num_trials, record_gens: As in sample_stats_and_sfs.
+    Returns:
+    - dict[str, np.ndarray]: The statistics from sample_stats_and_sfs.
+    """
+    stats, _ = sample_stats_and_sfs(pop_sizes, mu, sample_size, num_trials, record_gens)
+    return stats
+
+
+def sample_stats_and_sfs(pop_sizes: list[int], mu: float, sample_size: int, num_trials: int,
+                         record_gens: list[int]) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """
+    Runs many simulations that start with no variation and, at chosen generations,
+    samples sequences from each one, records S, pi, theta_W and Tajima's D, and
+    averages the site frequency spectrum over the simulations.
     Parameters:
     - pop_sizes (list[int]): The number of diploid individuals in each generation,
       including any burn-in generations at the start.
@@ -207,9 +283,13 @@ def sample_stats_per_trial(pop_sizes: list[int], mu: float, sample_size: int,
     - num_trials (int): The number of independent simulations.
     - record_gens (list[int]): The generations (1 to len(pop_sizes)) to sample at.
     Returns:
-    - dict[str, np.ndarray]: Keys "S", "pi", "theta_w" and "D", each an array with
-      one row per simulation and one column per entry of record_gens. D is nan
-      where the sample had no segregating sites.
+    - tuple[dict[str, np.ndarray], np.ndarray]: First, keys "S", "pi", "theta_w",
+      "D" and "singletons" (sites carried by exactly one sampled sequence), each an
+      array with one row per simulation and one column per entry of record_gens.
+      D is nan where the sample had no segregating sites.
+      Second, the average site frequency spectrum, with one row per entry of
+      record_gens and n - 1 columns: column i - 1 is the average number of sites
+      at which exactly i of the n sampled sequences carry the mutant.
     """
     if num_trials <= 0:
         raise ValueError("num_trials must be a positive integer.")
@@ -217,7 +297,9 @@ def sample_stats_per_trial(pop_sizes: list[int], mu: float, sample_size: int,
         raise ValueError("record_gens must be between 1 and len(pop_sizes).")
 
     index = {t: i for i, t in enumerate(record_gens)}
-    stats = {name: np.zeros((num_trials, len(record_gens))) for name in ["S", "pi", "theta_w", "D"]}
+    stats = {name: np.zeros((num_trials, len(record_gens)))
+             for name in ["S", "pi", "theta_w", "D", "singletons"]}
+    sfs = np.zeros((len(record_gens), sample_size - 1))
     a1, _ = harmonic_sums(sample_size)
     num_pairs = sample_size * (sample_size - 1) / 2
 
@@ -235,7 +317,9 @@ def sample_stats_per_trial(pop_sizes: list[int], mu: float, sample_size: int,
             stats["pi"][:, i] = pi
             stats["theta_w"][:, i] = num_segregating / a1
             stats["D"][:, i] = tajimas_d_from_summary(pi, num_segregating, sample_size)
-    return stats
+            stats["singletons"][:, i] = np.bincount(count_ids[counts == 1], minlength=num_trials)
+            sfs[i] = site_frequency_spectrum(counts, sample_size) / num_trials
+    return stats, sfs
 
 
 def summarize_trials(stats: dict[str, np.ndarray]) -> dict[str, list[float]]:

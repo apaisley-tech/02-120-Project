@@ -12,9 +12,13 @@ import numpy as np
 from diversity import (
     average_sample_stats,
     control_limits,
+    expected_sfs_shares,
     nucleotide_diversity,
     sample_counts,
+    sample_stats_and_sfs,
     sample_stats_per_trial,
+    sfs_ratio,
+    site_frequency_spectrum,
     summarize_trials,
     tajima_critical_values,
     tajimas_d,
@@ -229,6 +233,86 @@ class TestControlLimits(unittest.TestCase):
               f"(target 0.05)")
         self.assertGreater(share, 0.015)
         self.assertLess(share, 0.09)
+
+
+class TestSiteFrequencySpectrum(unittest.TestCase):
+    def test_hand_worked_spectrum(self):
+        # n = 5: two sites carried by 1 sequence, one by 3, none by 2 or 4.
+        self.assertEqual(list(site_frequency_spectrum(np.array([1, 3, 1]), 5)), [2, 0, 1, 0])
+
+    def test_empty_sample(self):
+        self.assertEqual(list(site_frequency_spectrum(np.empty(0, dtype=int), 4)), [0, 0, 0])
+
+    def test_expected_shares(self):
+        # n = 4: a1 = 11/6, so the shares are (6/11) * (1, 1/2, 1/3).
+        shares = expected_sfs_shares(4)
+        self.assertTrue(np.allclose(shares, [6 / 11, 3 / 11, 2 / 11]))
+        self.assertAlmostEqual(shares.sum(), 1)
+
+    def test_ratio_is_one_for_a_steady_shape(self):
+        # Any multiple of theta / i has exactly the steady shape.
+        spectrum = 7.5 / np.arange(1, 20)
+        self.assertTrue(np.allclose(sfs_ratio(spectrum), 1))
+        self.assertTrue(np.all(np.isnan(sfs_ratio(np.zeros(5)))))
+
+    def test_same_statistics_with_or_without_spectrum(self):
+        """
+        Counting the spectrum draws no random numbers, so with the same seed both
+        functions give exactly the same statistics.
+        """
+        args = ([30] * 200, 0.05, 8, 20, [100, 200])
+        set_seed(5)
+        stats_only = sample_stats_per_trial(*args)
+        set_seed(5)
+        stats, _ = sample_stats_and_sfs(*args)
+        for name in stats_only:
+            self.assertTrue(np.array_equal(stats_only[name], stats[name], equal_nan=True))
+
+    def test_singletons_match_first_class_of_spectrum(self):
+        set_seed(5)
+        stats, sfs = sample_stats_and_sfs([30] * 200, 0.05, 8, 20, [100, 200])
+        self.assertTrue(np.allclose(stats["singletons"].mean(axis=0), sfs[:, 0]))
+        self.assertTrue(np.all(stats["singletons"] <= stats["S"]))
+
+    def test_spectrum_adds_up_to_average_s(self):
+        # Every segregating site falls in exactly one class, so the classes add up to S.
+        set_seed(5)
+        stats, sfs = sample_stats_and_sfs([30] * 200, 0.05, 8, 20, [100, 200])
+        self.assertEqual(sfs.shape, (2, 7))
+        self.assertTrue(np.allclose(sfs.sum(axis=1), stats["S"].mean(axis=0)))
+
+    def test_steady_spectrum_matches_theory(self):
+        """
+        In a steady population, the expected number of sites carried by i of the
+        n sampled sequences is theta / i, with theta = 4N * mu (here 10). So
+        i * sfs[i] / theta should be about 1 in every class. Averaging 400
+        populations at 3 generations, the standard error is at most about 4%
+        per class, so we allow 15%.
+        """
+        set_seed(120)
+        pop_size, mu, n = 100, 0.025, 10
+        theta = 4 * pop_size * mu
+        _, sfs = sample_stats_and_sfs([pop_size] * 1500, mu, n, num_trials=400,
+                                      record_gens=[1000, 1250, 1500])
+        scaled = np.arange(1, n) * sfs.mean(axis=0) / theta
+        print("\ni * sfs[i] / theta in a steady population:", np.round(scaled, 2))
+        for i, value in enumerate(scaled, start=1):
+            with self.subTest(i=i):
+                self.assertAlmostEqual(value, 1, delta=0.15)
+
+    def test_crash_loses_rare_variants_and_growth_adds_them(self):
+        """
+        Just after a crash, rare variants are missing (fewer singletons than a steady
+        shape); during growth, new rare variants pile up (more singletons).
+        """
+        set_seed(120)
+        burn_in = [100] * 1000
+        crash = burn_in + make_crash_history(100, 5, 0, 10, 0)
+        growth = burn_in + make_growth_history(100, 2000, 0, 50, 50)
+        _, crash_sfs = sample_stats_and_sfs(crash, 0.025, 10, 200, [len(crash)])
+        _, growth_sfs = sample_stats_and_sfs(growth, 0.025, 10, 200, [len(growth)])
+        self.assertLess(sfs_ratio(crash_sfs)[0, 0], 0.8)
+        self.assertGreater(sfs_ratio(growth_sfs)[0, 0], 1.2)
 
 
 if __name__ == "__main__":

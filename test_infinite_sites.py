@@ -8,8 +8,10 @@ import unittest
 
 import numpy as np
 
+from diversity import sample_stats_per_trial
 from infinite_sites import (
     average_total_heterozygosity,
+    expected_sample_pi,
     simulate_sites,
     sites_generation,
     sites_generation_many,
@@ -102,6 +104,37 @@ class TestHeterozygosityTheory(unittest.TestCase):
                 print(f"{t:>4} {pop_size:>4} {simulated[t]:>12.3f} {expected:>9.3f}")
                 with self.subTest(generation=t):
                     self.assertAlmostEqual(simulated[t], expected, delta=0.1 * expected)
+
+
+class TestExpectedSamplePi(unittest.TestCase):
+    def test_starts_at_zero_and_reaches_4n_mu(self):
+        """
+        At equilibrium H = 4N * mu - 2 * mu, so a sample's pi is
+        (4N * mu - 2 * mu) * 2N / (2N - 1) = 2 * mu * 2N = 4N * mu exactly.
+        """
+        expected = expected_sample_pi([50] * 5000, mu=0.01)
+        self.assertEqual(len(expected), 5001)
+        self.assertEqual(expected[0], 0)
+        self.assertAlmostEqual(expected[-1], 4 * 50 * 0.01)
+
+    def test_first_generation_by_hand(self):
+        # H = (1 - 1/20) * 2 * 0.1 = 0.19, then 0.19 * 20/19 = 0.2.
+        self.assertAlmostEqual(expected_sample_pi([10], mu=0.1)[1], 0.2)
+
+    def test_matches_simulated_sample_pi_through_a_crash(self):
+        """
+        The theory should match the average pi of simulated samples. With 300
+        populations its standard error is about 2% here, so we allow 8%.
+        """
+        set_seed(120)
+        sizes = [100] * 1000 + make_crash_history(100, 5, 0, 10, 300)
+        gens = [1000, 1005, 1010, 1050, 1150, 1310]
+        # n = 10, because during the crash there are only 2N = 10 copies to sample.
+        simulated = sample_stats_per_trial(sizes, 0.02, 10, 300, gens)["pi"].mean(axis=0)
+        expected = expected_sample_pi(sizes, 0.02)[gens]
+        for t, sim, theory in zip(gens, simulated, expected):
+            with self.subTest(generation=t):
+                self.assertAlmostEqual(sim, theory, delta=0.08 * theory)
 
 
 if __name__ == "__main__":

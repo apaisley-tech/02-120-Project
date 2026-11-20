@@ -6,6 +6,8 @@ Run with: python3 -m unittest -v test_recovery
 
 import unittest
 
+import numpy as np
+
 from recovery import (
     compare_histories,
     compare_to_steady,
@@ -130,6 +132,27 @@ class TestGrowthRecovery(unittest.TestCase):
         for stat, values in times.items():
             with self.subTest(stat=stat):
                 self.assertEqual(values.shape, (2, 2))
+
+
+class TestParallelSeeds(unittest.TestCase):
+    def test_parallel_matches_one_after_another(self):
+        """
+        Every seed sets its own random numbers, so running seeds in separate
+        processes must give exactly the same recovery times.
+        """
+        histories = {size: make_crash_history(30, size, 0, 5, 60) for size in [10, 3]}
+        args = (30, histories, 0.05, 6, 30, 10, [1, 2, 3])
+        serial = recovery_times_over_seeds(*args, workers=1)
+        parallel = recovery_times_over_seeds(*args, workers=3)
+        for stat in serial:
+            self.assertTrue(np.array_equal(serial[stat], parallel[stat], equal_nan=True))
+
+    def test_growth_parallel_matches_one_after_another(self):
+        args = (20, [40, 80], 5, {40: 100, 80: 160}, 0.05, 6, 30, {40: 10, 80: 20}, [4, 5])
+        serial = growth_recovery_times(*args, workers=1)
+        parallel = growth_recovery_times(*args, workers=4)
+        for stat in serial:
+            self.assertTrue(np.array_equal(serial[stat], parallel[stat], equal_nan=True))
 
 
 if __name__ == "__main__":

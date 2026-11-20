@@ -8,6 +8,8 @@ populations to simulate. The app simulates the event and a steady control
 population, samples sequences from every population, and shows
 - Tajima's D, pi, Watterson's theta and S averaged over the populations, with
   the generation at which the event can no longer be told apart from the control,
+- pi predicted by theory alone, next to the simulated pi,
+- the site frequency spectrum at any generation, compared with a steady population's,
 - how often a single sample (one study, one population) has a D outside the
   range seen in the steady control, and the spread of D across populations at
   any generation.
@@ -26,11 +28,12 @@ MakeEventHistory(kind, normalSize, eventSize, eventGens, totalGens)
 RunScenario(settings)
     burnIn ← 10 * normalSize copies of normalSize
     gens ← 0, recordEvery, 2 * recordEvery, ... up to totalGens
-    steadyTrials ← SampleStatsPerTrial(burnIn + steady history, ...) with seed      (cached)
-    eventTrials ← SampleStatsPerTrial(burnIn + event history, ...) with seed + 1    (cached)
+    steadyTrials, steadySFS ← SampleStatsAndSFS(burnIn + steady history, ...) with seed      (cached)
+    eventTrials, eventSFS ← SampleStatsAndSFS(burnIn + event history, ...) with seed + 1    (cached)
     steady, event ← the averages of steadyTrials and eventTrials
     recovery ← RecoveryTimes(gens, event, steady)
-    return gens, steadyTrials, eventTrials, steady, event, recovery
+    theoryPi ← ExpectedSamplePi of each history at the sampled generations
+    return gens, steadyTrials, eventTrials, steady, event, recovery, the spectra and theoryPi
 
 FractionSignificant(dValues, lower, upper)
     for every recorded generation
@@ -45,9 +48,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import inference
 import wright_fisher
-from diversity import (control_limits, sample_stats_per_trial, summarize_trials,
-                       tajima_critical_values)
+from diversity import (control_limits, harmonic_sums, sample_stats_and_sfs, sfs_ratio,
+                       summarize_trials, tajima_critical_values)
+from infinite_sites import expected_sample_pi
 from recovery import recovery_times
 
 EVENT_COLOR = "#2a78d6"
@@ -122,19 +127,19 @@ def fraction_significant(d_values: np.ndarray, lower: float, upper: float) -> np
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def simulate(pop_sizes: tuple[int, ...], mu: float, sample_size: int, num_trials: int,
-             record_gens: tuple[int, ...], seed: int) -> dict[str, np.ndarray]:
+             record_gens: tuple[int, ...], seed: int) -> tuple[dict[str, np.ndarray], np.ndarray]:
     """
-    Runs sample_stats_per_trial with a fixed seed. Streamlit keeps the result, so
+    Runs sample_stats_and_sfs with a fixed seed. Streamlit keeps the result, so
     changing only the event's settings does not re-simulate the steady control.
     Parameters:
-    - pop_sizes, mu, sample_size, num_trials, record_gens: As in sample_stats_per_trial.
+    - pop_sizes, mu, sample_size, num_trials, record_gens: As in sample_stats_and_sfs.
     - seed (int): The random seed to set first.
     Returns:
-    - dict[str, np.ndarray]: The output of sample_stats_per_trial.
+    - tuple[dict[str, np.ndarray], np.ndarray]: The output of sample_stats_and_sfs.
     """
     wright_fisher.set_seed(seed)
-    return sample_stats_per_trial(list(pop_sizes), mu, sample_size, num_trials,
-                                  list(record_gens))
+    return sample_stats_and_sfs(list(pop_sizes), mu, sample_size, num_trials,
+                                list(record_gens))
 
 
 def run_scenario(settings: dict) -> dict:
@@ -147,7 +152,10 @@ def run_scenario(settings: dict) -> dict:
     Returns:
     - dict: "gens" (generations since the event began that were sampled),
       "steady_trials" and "event_trials" (each population's values), "steady" and
-      "event" (averages from summarize_trials) and "recovery" (from recovery_times).
+      "event" (averages from summarize_trials), "recovery" (from recovery_times),
+      "steady_sfs" and "event_sfs" (average site frequency spectra, one row per
+      sampled generation) and "steady_theory_pi" and "event_theory_pi" (pi
+      predicted by expected_sample_pi at every sampled generation).
     """
     normal_size, total_gens = settings["normal_size"], settings["total_gens"]
     burn_in = [normal_size] * (10 * normal_size)
@@ -158,12 +166,17 @@ def run_scenario(settings: dict) -> dict:
     common = (settings["mu"], settings["sample_size"], settings["num_trials"], record_gens)
 
     # Different seeds keep the event and control populations independent.
-    steady_trials = simulate(tuple(burn_in + [normal_size] * total_gens), *common,
-                             settings["seed"])
-    event_trials = simulate(tuple(burn_in + event_history), *common, settings["seed"] + 1)
+    steady_history = burn_in + [normal_size] * total_gens
+    event_history = burn_in + event_history
+    steady_trials, steady_sfs = simulate(tuple(steady_history), *common, settings["seed"])
+    event_trials, event_sfs = simulate(tuple(event_history), *common, settings["seed"] + 1)
     steady, event = summarize_trials(steady_trials), summarize_trials(event_trials)
+    mu, record = settings["mu"], list(record_gens)
     return {"gens": gens, "steady_trials": steady_trials, "event_trials": event_trials,
-            "steady": steady, "event": event, "recovery": recovery_times(gens, event, steady)}
+            "steady": steady, "event": event, "recovery": recovery_times(gens, event, steady),
+            "steady_sfs": steady_sfs, "event_sfs": event_sfs,
+            "steady_theory_pi": expected_sample_pi(steady_history, mu)[record],
+            "event_theory_pi": expected_sample_pi(event_history, mu)[record]}
 
 
 def color_scale(event_label: str) -> alt.Scale:
@@ -267,6 +280,15 @@ def stat_chart(result: dict, stat: str, settings: dict, event_label: str) -> alt
         strokeDash=alt.StrokeDash("population:N", scale=dash_scale(event_label), legend=None))
     layers = [event_band(settings), bands, lines]
 
+    if stat == "pi":
+        # Theory for both populations, dotted and near-black so it shows on either line.
+        theory = pd.concat([
+            pd.DataFrame({"generation": gens, "theory": result[f"{key}_theory_pi"],
+                          "population": label})
+            for label, key in [(event_label, "event"), ("steady control", "steady")]])
+        layers.append(alt.Chart(theory).mark_line(
+            color="#0b0b0b", strokeWidth=1.2, strokeDash=[1, 3]).encode(
+            x=x, y="theory:Q", detail="population:N"))
     if stat == "D":
         layers.append(alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
             color="#52514e", strokeWidth=0.8).encode(y="y:Q"))
@@ -371,6 +393,46 @@ def histogram_chart(result: dict, index: int, lower: float, upper: float,
                     header=alt.Header(labelAngle=0, labelAlign="left", labelOrient="top")))
 
 
+def sfs_chart(result: dict, index: int, event_label: str) -> alt.Chart:
+    """
+    Draws the shape of the site frequency spectrum at one recorded generation for
+    the event and the control, relative to a steady population.
+    Parameters:
+    - result (dict): The output of run_scenario.
+    - index (int): Which recorded generation to show.
+    - event_label (str): The legend name of the event population.
+    Returns:
+    - alt.Chart: One line per population against i, on a log scale, with a
+      dashed reference line at 1.
+    """
+    frames = []
+    for label, key in [(event_label, "event_sfs"), ("steady control", "steady_sfs")]:
+        spectrum = result[key][index]
+        frames.append(pd.DataFrame({
+            "i": np.arange(1, len(spectrum) + 1), "ratio": np.round(sfs_ratio(spectrum), 3),
+            "sites": np.round(spectrum, 2), "population": label}))
+    frame = pd.concat(frames).dropna()
+    if frame.empty:
+        return alt.Chart(pd.DataFrame()).mark_point()
+    low = min(0.25, frame["ratio"][frame["ratio"] > 0].min())
+    high = max(4, frame["ratio"].max())
+    lines = alt.Chart(frame).mark_line(strokeWidth=2, point=True).encode(
+        x=alt.X("i:Q", title="sequences carrying the mutant, i",
+                scale=alt.Scale(domain=[1, int(frame["i"].max())], nice=False),
+                axis=alt.Axis(tickMinStep=1)),
+        y=alt.Y("ratio:Q", title="share of variable sites ÷ steady share",
+                scale=alt.Scale(type="log", domain=[low, high])),
+        color=alt.Color("population:N", scale=color_scale(event_label), title=None,
+                        legend=alt.Legend(orient="top")),
+        strokeDash=alt.StrokeDash("population:N", scale=dash_scale(event_label), legend=None),
+        tooltip=["population", "i", alt.Tooltip("sites:Q", title="average sites"),
+                 alt.Tooltip("ratio:Q", title="× steady share")],
+    )
+    one = alt.Chart(pd.DataFrame({"y": [1]})).mark_rule(
+        color="#52514e", strokeDash=[2, 3]).encode(y="y:Q")
+    return (one + lines).properties(height=320)
+
+
 def describe_recovery(gen: int | None, total_gens: int) -> str:
     """
     Turns a recovery time into text for the summary row.
@@ -413,7 +475,18 @@ def sidebar_settings() -> dict:
     mu = sb.select_slider("Mutation rate μ (per gene copy per generation)",
                           [0.0025, 0.005, 0.0125, 0.025, 0.05], value=0.0125)
     sb.caption(f"θ = 4Nμ = {4 * normal_size * mu:g} for the steady population")
-    sample_size = sb.slider("Sequences sampled per population (n)", 4, 50, value=20)
+    # A sample cannot hold more sequences than the population has gene copies (2N),
+    # and the populations are also sampled during the crash.
+    max_sample = 50 if kind != "crash" else min(50, 2 * event_size)
+    if max_sample > 4:
+        sample_size = sb.slider("Sequences sampled per population (n)", 4, max_sample,
+                                value=min(20, max_sample))
+    else:
+        # Only one choice is left (a slider needs at least two), so no slider is drawn.
+        sample_size = max_sample
+    if max_sample < 50:
+        sb.caption(f"At most {max_sample} sequences: during the crash the population has "
+                   f"only 2N = {2 * event_size} gene copies to sample.")
 
     sb.header("Simulation")
     total_gens = sb.slider("Generations to follow", 200, 3000, value=1500, step=100)
@@ -453,15 +526,35 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
 
     lower, upper = control_limits(result["steady_trials"]["D"])
     tajima_lower, tajima_upper = tajima_critical_values(n)
-    tab_avg, tab_single, tab_data = st.tabs(["Averages over time", "Single samples", "Data"])
+    tab_avg, tab_sfs, tab_single, tab_data = st.tabs(
+        ["Averages over time", "Site frequency spectrum", "Single samples", "Data"])
 
     with tab_avg:
         stat = st.radio("Statistic", list(STAT_NAMES), format_func=STAT_NAMES.get,
                         horizontal=True, label_visibility="collapsed")
+        theory_note = (" Dotted lines show π predicted by theory alone: each generation "
+                       "of size N keeps a share 1 − 1/2N of the variation, and mutation "
+                       "adds 2μ." if stat == "pi" else "")
         st.caption(STAT_HELP[stat] + " Shaded bands are ±2 standard errors of the average. "
                    "The event counts as back to normal from the first generation after which "
-                   "it stays within 4 standard errors of the control.")
+                   "it stays within 4 standard errors of the control." + theory_note)
         st.altair_chart(stat_chart(result, stat, settings, event_label), width="stretch")
+
+    with tab_sfs:
+        st.markdown(
+            f"The site frequency spectrum counts how many variable sites are carried by "
+            f"1, 2, ..., {n - 1} of the {n} sampled sequences. In a steady population, a "
+            "site carried by i sequences is expected in proportion to 1/i, so here each "
+            "share is divided by that steady share: **1 means steady**. Too few rare "
+            "variants (low i below 1) makes D positive; too many makes D negative.")
+        sfs_gen = st.select_slider(
+            "Show the spectrum at generation", result["gens"],
+            value=min(result["gens"], key=lambda g: abs(g - settings["event_gens"])),
+            key="sfs_gen")
+        st.altair_chart(sfs_chart(result, result["gens"].index(sfs_gen), event_label),
+                        width="stretch")
+        st.caption("Averaged over all simulated populations. The steady control wobbles "
+                   "around 1 by chance; wobbles are larger for big i, where sites are few.")
 
     with tab_single:
         if np.isnan(lower):
@@ -492,9 +585,158 @@ def show_results(result: dict, settings: dict, event_label: str) -> None:
             for stat in STAT_NAMES:
                 table[f"{prefix}_{stat}"] = result[key][stat]
                 table[f"{prefix}_{stat}_se"] = result[key][stat + "_se"]
+            table[f"{prefix}_pi_theory"] = result[f"{key}_theory_pi"]
         st.dataframe(table, hide_index=True, width="stretch")
         st.download_button("Download CSV", table.to_csv(index=False), "simulation.csv",
                            "text/csv")
+
+
+# The reference table used to work backwards (see inference.py).
+TABLE_SETTINGS = {"normal_size": 200, "mu": 0.0125, "sample_size": 20}
+
+
+@st.cache_resource(show_spinner=False)
+def reference_table() -> dict[str, np.ndarray]:
+    """
+    Loads the reference table, building it the first time (about a minute).
+    Returns:
+    - dict[str, np.ndarray]: The output of inference.cached_reference_table.
+    """
+    return inference.cached_reference_table(**TABLE_SETTINGS)
+
+
+def new_mystery(seed: int) -> dict:
+    """
+    Picks a random history (steady, crash or growth with equal chance) and takes
+    one sample from a population with that history.
+    Parameters:
+    - seed (int): Chooses the history and the simulated population.
+    Returns:
+    - dict: "label" (the true history in words), "kind", "strength" and "time"
+      (nan where they do not apply) and "observed" (the sample's statistics).
+    """
+    rng = np.random.default_rng(seed)
+    normal_size = TABLE_SETTINGS["normal_size"]
+    kind = str(rng.choice(inference.KINDS))
+    strength, ago = np.nan, np.nan
+    if kind == "steady":
+        sizes, label = [normal_size] * 100, "steady: no crash or growth"
+    elif kind == "crash":
+        size, length = int(rng.integers(10, 101)), int(rng.integers(5, 41))
+        ago = int(rng.integers(length, 1001))
+        sizes = wright_fisher.make_crash_history(normal_size, size, 0, length, ago - length)
+        strength = length / (2 * size)
+        label = (f"a crash to N = {size} for {length} generations (strength "
+                 f"{strength:.2f}), which began {ago} generations ago")
+    else:
+        end_size, ago = int(rng.integers(400, 4001)), int(rng.integers(20, 1001))
+        sizes = wright_fisher.make_growth_history(normal_size, end_size, 0, 20, ago - 20)
+        label = f"growth to N = {end_size} over 20 generations, which began {ago} generations ago"
+    observed = inference.observe(sizes, normal_size, TABLE_SETTINGS["mu"],
+                                 TABLE_SETTINGS["sample_size"], seed=100_000 + seed)
+    return {"label": label, "kind": kind, "strength": strength, "time": ago,
+            "observed": observed}
+
+
+def posterior_chart(kept: dict[str, np.ndarray], kind: str) -> alt.Chart:
+    """
+    Draws how the kept rows of one kind spread over severity and time.
+    Parameters:
+    - kept (dict): The output of inference.infer.
+    - kind (str): "crash" or "growth".
+    Returns:
+    - alt.Chart: A heat map: crash strength (or size after growth) against
+      generations since the event began; darker means more likely.
+    """
+    rows = kept["kind"] == inference.KINDS.index(kind)
+    if kind == "crash":
+        level = kept["crash_length"][rows] / (2 * kept["crash_size"][rows])
+        level_title = "crash strength, length / (2 × size)"
+    else:
+        level = kept["end_size"][rows]
+        level_title = "size after growth"
+    frame = pd.DataFrame({"level": level, "time": kept["time"][rows] // 50 * 50,
+                          "weight": kept["weight"][rows]})
+    frame = frame.groupby(["level", "time"], as_index=False)["weight"].sum()
+    frame["percent"] = 100 * frame["weight"] / frame["weight"].sum()
+    frame["level"] = frame["level"].map(lambda v: f"{v:g}")
+    order = sorted(frame["level"].unique(), key=float, reverse=True)
+    return alt.Chart(frame).mark_rect().encode(
+        x=alt.X("time:Q", title="generations since the event began", bin=alt.Bin(step=50),
+                scale=alt.Scale(domain=[0, 1000])),
+        y=alt.Y("level:O", title=level_title, sort=order),
+        color=alt.Color("percent:Q", title="% of this kind", scale=alt.Scale(scheme="blues")),
+        tooltip=[alt.Tooltip("level:N", title=level_title),
+                 alt.Tooltip("time:Q", title="from generation"),
+                 alt.Tooltip("percent:Q", format=".1f", title="% of this kind")],
+    ).properties(height=260)
+
+
+def work_backwards_page() -> None:
+    """
+    Infers the history of a population from one sample, using the reference table.
+    """
+    n = TABLE_SETTINGS["sample_size"]
+    st.write(
+        "Work backwards: from **one sample** of DNA sequences, which history most likely "
+        "produced it? The app compares the sample with hundreds of thousands of simulated "
+        "samples whose histories are known (steady, crashes to N = 10–100 lasting 5–40 "
+        "generations, and growth to N = 400–4000), keeps the 500 most similar, and reports "
+        "which histories they came from. Steady, crash and growth start with equal odds. "
+        f"The simulated samples use N = {TABLE_SETTINGS['normal_size']} before any event, "
+        f"μ = {TABLE_SETTINGS['mu']} and n = {n}, so a sample should come from the same "
+        "settings.")
+
+    with st.spinner("Loading the reference table (about a minute the first time)..."):
+        table = reference_table()
+
+    source = st.radio("Sample", ["Mystery population", "Enter my own numbers"],
+                      horizontal=True, label_visibility="collapsed")
+    if source == "Mystery population":
+        if st.button("New mystery population") or "mystery" not in st.session_state:
+            st.session_state["mystery_seed"] = st.session_state.get("mystery_seed", -1) + 1
+            st.session_state["mystery"] = new_mystery(st.session_state["mystery_seed"])
+        mystery = st.session_state["mystery"]
+        observed = mystery["observed"]
+        cols = st.columns(3)
+        cols[0].metric("π", f"{observed['pi']:.2f}")
+        cols[1].metric("S (variable sites)", f"{observed['S']:.0f}")
+        cols[2].metric("Singletons", f"{observed['singletons']:.0f}")
+    else:
+        cols = st.columns(3)
+        observed = {
+            "pi": cols[0].number_input("π", min_value=0.0, value=6.0, step=0.1),
+            "S": cols[1].number_input("S (variable sites)", min_value=0, value=25, step=1),
+            "singletons": cols[2].number_input("Singletons", min_value=0, value=10, step=1),
+        }
+        if observed["singletons"] > observed["S"]:
+            st.error("There cannot be more singletons than variable sites.")
+            return
+        st.caption(f"For reference, a steady sample averages π ≈ S / "
+                   f"{harmonic_sums(n)[0]:.2f} ≈ {4 * TABLE_SETTINGS['normal_size'] * TABLE_SETTINGS['mu']:g}.")
+
+    kept = inference.infer(observed, table)
+    summary = inference.summarize(kept)
+    probability = summary["probability"]
+    cols = st.columns(3)
+    for col, kind in zip(cols, inference.KINDS):
+        col.metric(f"P({kind})", f"{probability[kind]:.2f}")
+    st.text(inference.describe(summary))
+
+    for kind in ["crash", "growth"]:
+        if probability[kind] > 0.05:
+            st.markdown(f"**If it was {'a crash' if kind == 'crash' else 'growth'}:** "
+                        "darker cells are more likely.")
+            st.altair_chart(posterior_chart(kept, kind), width="stretch")
+
+    if source == "Mystery population":
+        with st.expander("Reveal the truth"):
+            st.write(f"This population had {mystery['label']}.")
+    st.caption(
+        "In tests on simulated samples, severe crashes (strength above 1) are recognized "
+        "about 98% of the time in the first 300 generations and weak ones (below 0.1) only "
+        "about a third of the time, because a weak crash leaves a sample that looks steady. "
+        "The 90% ranges contain the truth about 90–97% of the time.")
 
 
 def main():
@@ -504,6 +746,11 @@ def main():
              "later generations, and for how long? Pick a history in the sidebar, then "
              "simulate it alongside a steady control population (Wright-Fisher model with "
              "infinite-sites mutation, after a burn-in of 10N generations).")
+
+    mode = st.sidebar.radio("Mode", ["Explore an event", "Work backwards"], horizontal=True)
+    if mode == "Work backwards":
+        work_backwards_page()
+        return
 
     settings = sidebar_settings()
     event_label = {"crash": f"crash to N = {settings['event_size']}",
