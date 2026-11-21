@@ -1,5 +1,8 @@
 # 02-120-Project: Population crashes, growth and genetic variation
 
+**Live app:** https://dqy5p6gtahng9wvgfeyyst.streamlit.app/ (free hosting: if the app has been
+idle, press the button to wake it and wait about a minute)
+
 **Research question:** Does a rapid population crash or rapid growth change the genetic
 variation of later generations? If so, how long does the effect last?
 
@@ -167,6 +170,10 @@ python3 -m venv .venv          # on Debian/Ubuntu, first: sudo apt install pytho
 ```
 
 ## Interactive app
+
+The app is online at https://dqy5p6gtahng9wvgfeyyst.streamlit.app/, hosted free on Streamlit
+Community Cloud, which rebuilds it from this repository's `main` branch after every push. It
+runs slower there than on a fast computer. To run it yourself:
 
 ```bash
 .venv/bin/streamlit run app.py
