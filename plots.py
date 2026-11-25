@@ -3,11 +3,13 @@ Plots how Tajima's D and pi change over time after population crashes or growth
 of different sizes, and how long crashes and growth of different sizes take to
 recover from.
 
-Run with: python3 plots.py [crash | growth | severity | length | growthsize | sfs | inference]
-With no argument, all seven figures are made. They are saved to
+Run with: python3 plots.py [crash | growth | severity | length | growthsize | sfs |
+                           inference | linkage | wrongsize]
+With no argument, all nine figures are made. They are saved to
 figures/crash_recovery.png, figures/growth_recovery.png,
 figures/recovery_vs_crash_size.png, figures/recovery_vs_crash_strength.png,
-figures/recovery_vs_growth_size.png, figures/sfs.png and figures/inference.png; the
+figures/recovery_vs_growth_size.png, figures/sfs.png, figures/inference.png,
+figures/linkage.png and figures/inference_wrong_size.png; the
 severity, length and growthsize options also save their recovery times to a CSV file with the same name.
 
 Pseudocode
@@ -41,6 +43,17 @@ PlotRecoveryVsGrowthSize(times, endSizes)
     in the right panel, plot recovery time divided by the size after growth
     in both, draw each seed as a small dot and the average over seeds as a line,
     for D and for pi
+
+PlotLinkage(spread, times)
+    in the left panel, for unlinked and linked sites, draw the average D after one
+    crash as a line and the middle 90% of single samples as a shaded band
+    in the right panel, plot recovery time against crash size for D and pi,
+    one color for unlinked and one for linked sites
+
+PlotWrongSize(trueSizes, rates)
+    for each real population size, test the inference made with a table at the
+    assumed size, and plot how often it names the right kind of history and how
+    often its 90% range for the crash time holds the truth
 """
 
 import csv
@@ -55,8 +68,9 @@ import numpy as np
 
 import wright_fisher
 import inference
-from diversity import sample_stats_and_sfs, sfs_ratio
+from diversity import sample_stats_and_sfs, sample_stats_per_trial, sfs_ratio
 from infinite_sites import expected_sample_pi
+from linkage import linked_sample_stats
 from recovery import compare_histories, growth_recovery_times, recovery_times_over_seeds
 
 # Ordinal blue ramp, light (mild event) to dark (extreme event).
@@ -64,6 +78,8 @@ EVENT_COLORS = ["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
 # Categorical slots 1 and 2, one per statistic.
 STAT_COLORS = {"D": "#2a78d6", "pi": "#eb6834"}
 STAT_LABELS = {"D": "Tajima's D", "pi": "π"}
+# The same two slots, for unlinked against linked sites.
+MODEL_COLORS = {"unlinked": "#2a78d6", "linked": "#eb6834"}
 STEADY_COLOR = "#8a8984"
 TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
@@ -621,6 +637,213 @@ def make_inference_figure(normal_size: int, mu: float, sample_size: int) -> None
     print(f"Saved {path}")
 
 
+def plot_linkage(spread: dict[str, dict], times: dict[str, dict[str, np.ndarray]],
+                 crash_sizes: list[int], example: str, gens_crash: int, title: str,
+                 path: str) -> None:
+    """
+    Compares unlinked and linked sites: Tajima's D over time after one crash (average
+    and spread of single samples), and recovery time against crash size.
+    Parameters:
+    - spread (dict): For "unlinked" and "linked", "gens" and the "mean", "low" and
+      "high" (5% and 95% points) of D across populations at each generation.
+    - times (dict): For "unlinked" and "linked", the output of recovery_times_over_seeds.
+    - crash_sizes (list[int]): The crash sizes, one per column of times.
+    - example (str): A description of the crash in the left panel.
+    - gens_crash (int): The number of generations each crash lasted.
+    - title (str): The figure title.
+    - path (str): Where to save the figure.
+    """
+    fig, (ax_d, ax_rec) = plt.subplots(1, 2, figsize=(13, 5), facecolor=SURFACE)
+    for ax in (ax_d, ax_rec):
+        style_axes(ax)
+
+    ax_d.axvspan(0, gens_crash, color=GRID_COLOR, linewidth=0)
+    ax_d.axhline(0, color=TEXT_SECONDARY, linewidth=0.8)
+    for model, color in MODEL_COLORS.items():
+        s = spread[model]
+        ax_d.fill_between(s["gens"], s["low"], s["high"], color=color, alpha=0.15, linewidth=0)
+        ax_d.plot(s["gens"], s["mean"], color=color, linewidth=2,
+                  label=f"{model} sites: average")
+        ax_d.plot(s["gens"], s["low"], color=color, linewidth=0.8, linestyle=":")
+        ax_d.plot(s["gens"], s["high"], color=color, linewidth=0.8, linestyle=":",
+                  label=f"{model} sites: middle 90% of single samples")
+    ax_d.set_xlim(0, spread["unlinked"]["gens"][-1])
+    ax_d.set_xlabel("generations since the crash began", color=TEXT_PRIMARY, fontsize=10)
+    ax_d.set_ylabel("Tajima's D", color=TEXT_PRIMARY, fontsize=10)
+    ax_d.set_title(f"{example}: same average, wider spread", loc="left", fontsize=10,
+                   color=TEXT_PRIMARY)
+    ax_d.legend(frameon=False, fontsize=8, labelcolor=TEXT_PRIMARY, loc="lower right")
+
+    for model, color in MODEL_COLORS.items():
+        for stat, style in [("D", "-"), ("pi", "--")]:
+            ax_rec.plot(crash_sizes, np.nanmean(times[model][stat], axis=0), color=color,
+                        linewidth=2, linestyle=style, marker="o", markersize=5,
+                        label=f"{STAT_LABELS[stat]}, {model} sites")
+    ax_rec.set_xscale("log")
+    ax_rec.set_xticks(crash_sizes)
+    ax_rec.set_xticklabels([str(size) for size in crash_sizes])
+    ax_rec.minorticks_off()
+    ax_rec.set_xlim(crash_sizes[0] * 1.15, crash_sizes[-1] / 1.15)
+    ax_rec.set_ylim(bottom=0)
+    ax_rec.set_xlabel("population size during the crash (log scale; more severe →)",
+                      color=TEXT_PRIMARY, fontsize=10)
+    ax_rec.set_ylabel("recovery time (generations since the crash began)",
+                      color=TEXT_PRIMARY, fontsize=10)
+    ax_rec.set_title(f"Recovery time, 200 populations (average of "
+                     f"{len(times['linked']['D'])} seeds)", loc="left", fontsize=10,
+                     color=TEXT_PRIMARY)
+    ax_rec.legend(frameon=False, fontsize=8, labelcolor=TEXT_PRIMARY, loc="upper left")
+
+    fig.suptitle(title, x=0.05, ha="left", fontsize=12, color=TEXT_PRIMARY)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def make_linkage_figure(normal_size: int, mu: float, sample_size: int, gens_crash: int) -> None:
+    """
+    Repeats the crash experiments and the inference test with completely linked
+    sites, and compares them with unlinked sites (figures/linkage.png).
+    Parameters:
+    - normal_size (int): The population size before and after each crash.
+    - mu (float): The mutation rate per gene copy per generation.
+    - sample_size (int): The number of sampled sequences n.
+    - gens_crash (int): The number of generations each crash lasts.
+    """
+    simulators = {"unlinked": sample_stats_per_trial, "linked": linked_sample_stats}
+    burn_in = [normal_size] * (10 * normal_size)
+
+    # Left panel: D after one crash, averaged and spread across populations.
+    example_size, gens_after = 10, 1000
+    sizes = wright_fisher.make_crash_history(normal_size, example_size, 0, gens_crash,
+                                             gens_after)
+    gens = list(range(0, gens_crash + gens_after + 1, 10))
+    spread = {}
+    for model, simulate in simulators.items():
+        wright_fisher.set_seed(120)
+        d = simulate(burn_in + sizes, mu, sample_size, 1000,
+                     [len(burn_in) + t for t in gens])["D"]
+        spread[model] = {"gens": gens, "mean": np.nanmean(d, axis=0),
+                         "low": np.nanpercentile(d, 5, axis=0),
+                         "high": np.nanpercentile(d, 95, axis=0)}
+        print(f"  {model}: middle 90% of D before the crash "
+              f"{spread[model]['low'][0]:.2f} to {spread[model]['high'][0]:.2f}; "
+              f"average D at generation {gens_crash}: {spread[model]['mean'][gens_crash // 10]:.2f}, "
+              f"at 200: {spread[model]['mean'][20]:.2f}")
+
+    # Right panel: recovery time against crash size, as in the severity figure.
+    crash_sizes = [100, 50, 30, 20, 15, 10]
+    seeds = [120, 121, 122, 123, 124]
+    histories = {size: wright_fisher.make_crash_history(normal_size, size, 0, gens_crash, 1500)
+                 for size in crash_sizes}
+    times = {model: recovery_times_over_seeds(normal_size, histories, mu, sample_size,
+                                              num_trials=200, record_every=10, seeds=seeds,
+                                              simulate=simulate)
+             for model, simulate in simulators.items()}
+    print(f"{'crash size':>10} " + " ".join(f"{model + ' ' + stat:>14}"
+                                           for model in times for stat in ["D", "pi"]))
+    for j, size in enumerate(crash_sizes):
+        print(f"{size:>10} " + " ".join(f"{np.nanmean(times[model][stat][:, j]):>14.0f}"
+                                        for model in times for stat in ["D", "pi"]))
+
+    path = os.path.join("figures", "linkage.png")
+    plot_linkage(spread, times, crash_sizes,
+                 f"Crash to N = {example_size} for {gens_crash} generations", gens_crash,
+                 f"Unlinked sites (the rest of this project) against completely linked sites "
+                 f"(N = {normal_size} before)", path)
+    print(f"Saved {path}")
+
+    # Working backwards: linked samples, judged with an unlinked or a linked table.
+    tables = {model: inference.cached_reference_table(normal_size=normal_size, mu=mu,
+                                                      sample_size=sample_size,
+                                                      linked=model == "linked")
+              for model in simulators}
+    print("\nWorking backwards (3000 test samples each; % right kind, % of 90% ranges "
+          "holding the truth):")
+    for label, reference, tests in [("unlinked samples, unlinked table", "unlinked", None),
+                                    ("linked samples, unlinked table", "unlinked", "linked"),
+                                    ("linked samples, linked table", "linked", None)]:
+        results = inference.validate(tables[reference], num_tests=3000,
+                                     tests=None if tests is None else tables[tests])
+        r = inference.validation_rates(results)
+        print(f"  {label:>33}: steady {r['steady']:.0%}, severe crash in first 300 "
+              f"{r['severe_early']:.0%}, growth {r['growth']:.0%}; ranges: strength "
+              f"{r['strength_covered']:.0%}, crash time {r['crash_time_covered']:.0%}, "
+              f"growth time {r['growth_time_covered']:.0%}")
+
+
+def plot_wrong_size(true_sizes: list[int], rates: list[dict], assumed_size: int, title: str,
+                    path: str) -> None:
+    """
+    Plots how often the inference gets the right kind of history, and how often its
+    ranges hold the truth, when the population's real size differs from the table's.
+    Parameters:
+    - true_sizes (list[int]): The real population sizes before any event.
+    - rates (list[dict]): inference.validation_rates for each true size.
+    - assumed_size (int): The population size the reference table assumes.
+    - title (str): The figure title.
+    - path (str): Where to save the figure.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5.2), facecolor=SURFACE)
+    style_axes(ax)
+    lines = [("steady", "steady samples called steady", STEADY_COLOR, "-"),
+             ("severe_early", "severe crashes (first 300 generations) called crashes",
+              EVENT_COLORS[3], "-"),
+             ("growth", "growth called growth", STAT_COLORS["pi"], "-"),
+             ("crash_time_covered", "crash time: 90% range holds the truth", EVENT_COLORS[1],
+              "--")]
+    for key, label, color, style in lines:
+        ax.plot(true_sizes, [100 * r[key] for r in rates], color=color, linewidth=2,
+                linestyle=style, marker="o", markersize=5, label=label)
+    ax.axvline(assumed_size, color=TEXT_SECONDARY, linewidth=0.8)
+    ax.text(assumed_size, 103, f" table assumes N = {assumed_size}", fontsize=8.5,
+            color=TEXT_SECONDARY, va="bottom")
+    ax.set_xscale("log")
+    ax.set_xticks(true_sizes)
+    ax.set_xticklabels([str(size) for size in true_sizes])
+    ax.minorticks_off()
+    ax.set_ylim(0, 110)
+    ax.set_xlabel("real population size before any event (log scale)", color=TEXT_PRIMARY,
+                  fontsize=10)
+    ax.set_ylabel("% of test samples", color=TEXT_PRIMARY, fontsize=10)
+    ax.legend(frameon=False, fontsize=8.5, labelcolor=TEXT_PRIMARY, loc="lower left")
+    fig.suptitle(title, x=0.07, ha="left", fontsize=12, color=TEXT_PRIMARY)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def make_wrong_size_figure(normal_size: int, mu: float, sample_size: int) -> None:
+    """
+    Tests the inference on populations whose real size before any event differs
+    from the size the reference table assumes (figures/inference_wrong_size.png).
+    Parameters:
+    - normal_size (int): The population size the reference table assumes.
+    - mu (float): The mutation rate per gene copy per generation.
+    - sample_size (int): The number of sampled sequences n.
+    """
+    table = inference.cached_reference_table(normal_size=normal_size, mu=mu,
+                                             sample_size=sample_size)
+    true_sizes = [100, 130, 160, 200, 250, 300, 400]
+    rates = []
+    for true_size in true_sizes:
+        # The same grid of histories, starting from the real size (30 populations each).
+        tests = inference.build_reference_table(normal_size=true_size, mu=mu,
+                                                sample_size=sample_size, num_trials=30,
+                                                seed=500)
+        rates.append(inference.validation_rates(
+            inference.validate(table, num_tests=3000, tests=tests)))
+        r = rates[-1]
+        print(f"  real N = {true_size}: steady {r['steady']:.0%}, severe crash in first 300 "
+              f"{r['severe_early']:.0%}, growth {r['growth']:.0%}; crash time range holds "
+              f"the truth {r['crash_time_covered']:.0%}")
+    path = os.path.join("figures", "inference_wrong_size.png")
+    plot_wrong_size(true_sizes, rates, normal_size,
+                    "Working backwards when the population's real size is not the "
+                    f"assumed N = {normal_size}", path)
+    print(f"Saved {path}")
+
+
 def main():
     normal_size, mu, sample_size = 200, 0.0125, 20
     event_gens, gens_after = 20, 1000
@@ -645,11 +868,12 @@ def main():
                    "Tajima's D and π over time"),
     }
 
-    options = list(figures) + ["severity", "length", "growthsize", "sfs", "inference"]
+    options = list(figures) + ["severity", "length", "growthsize", "sfs", "inference",
+                               "linkage", "wrongsize"]
     chosen = sys.argv[1:] or options
     if any(name not in options for name in chosen):
-        sys.exit("usage: python3 plots.py "
-                 "[crash | growth | severity | length | growthsize | sfs | inference]")
+        sys.exit("usage: python3 plots.py [crash | growth | severity | length | "
+                 "growthsize | sfs | inference | linkage | wrongsize]")
 
     os.makedirs("figures", exist_ok=True)
     if "severity" in chosen:
@@ -662,6 +886,10 @@ def main():
         make_sfs_figure(normal_size, mu, sample_size, event_gens)
     if "inference" in chosen:
         make_inference_figure(normal_size, mu, sample_size)
+    if "linkage" in chosen:
+        make_linkage_figure(normal_size, mu, sample_size, event_gens)
+    if "wrongsize" in chosen:
+        make_wrong_size_figure(normal_size, mu, sample_size)
     for name in [name for name in chosen if name in figures]:
         wright_fisher.set_seed(120)
         histories, title = figures[name]

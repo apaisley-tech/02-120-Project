@@ -217,7 +217,7 @@ steady control instead. The app shows Tajima's limits alongside for comparison.
 
 | Command | What it does | Time |
 |---|---|---|
-| `.venv/bin/python plots.py` | Makes all seven figures in `figures/` | ~16 min |
+| `.venv/bin/python plots.py` | Makes all nine figures in `figures/` | ~25 min |
 | `.venv/bin/python plots.py crash` | Only the crash figure | ~15 s |
 | `.venv/bin/python plots.py growth` | Only the growth figure | ~50 s |
 | `.venv/bin/python plots.py severity` | Only the recovery time vs. crash size figure, plus its CSV | ~1 min |
@@ -225,11 +225,14 @@ steady control instead. The app shows Tajima's limits alongside for comparison.
 | `.venv/bin/python plots.py growthsize` | Only the recovery time vs. growth size figure, plus its CSV | ~10 min |
 | `.venv/bin/python plots.py sfs` | Only the site frequency spectrum figure | ~25 s |
 | `.venv/bin/python plots.py inference` | Only the working-backwards figure | ~1.5 min (+45 s the first time) |
+| `.venv/bin/python plots.py linkage` | Only the linked-sites figure, plus the inference test with linked samples | ~6 min (+1 min the first time) |
+| `.venv/bin/python plots.py wrongsize` | Only the wrong-population-size figure | ~2 min |
 | `.venv/bin/python inference.py` | Builds the reference table, infers four mystery populations and prints the validation | ~1 min (+45 s the first time) |
 | `.venv/bin/python recovery.py` | Prints recovery times for crashes of several sizes | ~20 s |
 | `.venv/bin/python diversity.py` | Prints average Tajima's D over time for steady, crash and growth | ~5 s |
 | `.venv/bin/python infinite_sites.py` | Runs one population to equilibrium and prints its variation | <1 s |
 | `.venv/bin/python wright_fisher.py` | Single-locus drift demos | <1 s |
+| `.venv/bin/python linkage.py` | Compares linked and unlinked sites in a steady population | ~10 s |
 
 Times are for an 8-core computer. The severity, length and growthsize figures repeat their
 experiment with 5 random seeds, which run at the same time on different CPU cores; with
@@ -238,10 +241,10 @@ fewer cores they take longer, but give exactly the same results.
 ## Tests
 
 ```bash
-.venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery test_inference test_app test_animation
+.venv/bin/python -m unittest -v test_wright_fisher test_infinite_sites test_diversity test_recovery test_inference test_app test_animation test_linkage
 ```
 
-The 86 tests take about 30 seconds. Besides unit tests with hand-worked answers, they check
+The 96 tests take about 45 seconds. Besides unit tests with hand-worked answers, they check
 the simulation against population-genetics theory:
 
 - A neutral allele fixes with probability equal to its starting frequency.
@@ -265,6 +268,10 @@ the simulation against population-genetics theory:
   match the simulated numbers.
 - Working backwards finds a recent severe crash and large growth from single samples, and
   gives each kind 1/3 prior odds even though the grid has more crash histories.
+- Linked sites give the same averages as unlinked ones (π, θ_W and singletons all near 4Nμ
+  when steady; D positive and π matching just after a crash), but D varies at least 1.8 ×
+  as much between samples. A sample from generation 1 has only singletons, since
+  generation 0 has no variation.
 
 ## How it works
 
@@ -277,6 +284,7 @@ the simulation against population-genetics theory:
 | `inference.py` | Works backwards from one sample: builds the reference table (`build_reference_table`, saved in `inference_cache/`), keeps the closest simulated samples (`infer`), summarizes them (`summarize`) and tests the method on samples with known histories (`validate`). |
 | `plots.py` | Draws the figures above. |
 | `app.py` | The interactive Streamlit app. |
+| `linkage.py` | Simulates completely linked sites (no recombination): each sample's family tree is traced back through the size history (`linked_sample_stats`), and mutations fall on its branches. Same inputs and outputs as `sample_stats_per_trial`, so `compare_histories`, `recovery_times_over_seeds` (`simulate=`) and `build_reference_table` (`linked=True`) can use it instead. |
 | `animation.py` | Builds the app's animated Plotly charts (the site frequency spectrum and the spread of D over time), with play and pause buttons, a slider and a time marker. |
 
 Each simulation starts with no variation and runs a burn-in of 10N generations at the normal

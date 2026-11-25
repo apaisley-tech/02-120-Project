@@ -37,6 +37,7 @@ CompareHistories(normalSize, histories, mu, n, numTrials, recordEvery, numSE, co
     burnIn ← 10 * normalSize copies of normalSize
     controlBurnIn ← 10 * controlSize copies of controlSize
     gens ← 0, recordEvery, 2 * recordEvery, ... up to the history length
+    (Samples come from SampleStatsPerTrial, or from LinkedSampleStats for linked sites.)
     steady ← AverageSampleStats(controlBurnIn + controlSize copies, ...)
              at the end of controlBurnIn + gens
     for every label, eventSizes in histories
@@ -153,7 +154,8 @@ def compare_to_steady(normal_size: int, event_sizes: list[int], mu: float,
 
 def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: float,
                       sample_size: int, num_trials: int, record_every: int,
-                      num_se: float = 4, control_size: int | None = None) -> dict[str, dict]:
+                      num_se: float = 4, control_size: int | None = None,
+                      simulate=None) -> dict[str, dict]:
     """
     Runs compare_to_steady for several events that share one steady control,
     so the control only needs to be simulated once.
@@ -166,6 +168,9 @@ def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: flo
     - control_size (int | None): The size of the steady control, which gets its own
       burn-in at that size. Defaults to normal_size. After growth, set it to the new
       size, so recovery means looking like a population that was always that large.
+    - simulate: The function that simulates samples, with the inputs and outputs of
+      diversity.sample_stats_per_trial (the default). linkage.linked_sample_stats
+      simulates linked sites instead.
     Returns:
     - dict[str, dict]: The compare_to_steady result for each label.
     """
@@ -176,20 +181,22 @@ def compare_histories(normal_size: int, histories: dict[str, list[int]], mu: flo
 
     if control_size is None:
         control_size = normal_size
+    if simulate is None:
+        simulate = sample_stats_per_trial
 
     burn_in = [normal_size] * (10 * normal_size)
     control_burn_in = [control_size] * (10 * control_size)
     gens = list(range(0, num_gens + 1, record_every))
     record_gens = [len(burn_in) + t for t in gens]
     control_record_gens = [len(control_burn_in) + t for t in gens]
-    steady_trials = sample_stats_per_trial(control_burn_in + [control_size] * num_gens, mu,
-                                           sample_size, num_trials, control_record_gens)
+    steady_trials = simulate(control_burn_in + [control_size] * num_gens, mu,
+                             sample_size, num_trials, control_record_gens)
     steady = summarize_trials(steady_trials)
 
     results = {}
     for label, event_sizes in histories.items():
-        event_trials = sample_stats_per_trial(burn_in + event_sizes, mu, sample_size,
-                                              num_trials, record_gens)
+        event_trials = simulate(burn_in + event_sizes, mu, sample_size, num_trials,
+                                record_gens)
         event = summarize_trials(event_trials)
         recovery = recovery_times(gens, event, steady, num_se)
         results[label] = {"gens": gens, "event": event, "steady": steady,
@@ -226,16 +233,16 @@ def _recovery_for_seed(task: tuple) -> dict:
     Runs one seed's experiment for recovery_times_over_seeds and growth_recovery_times.
     Parameters:
     - task (tuple): seed, normal_size, histories, mu, sample_size, num_trials,
-      record_every and control_size, as in recovery_times_over_seeds.
+      record_every, control_size and simulate, as in recovery_times_over_seeds.
     Returns:
     - dict: For each history label, the recovery time of each statistic (None if
       not recovered).
     """
     (seed, normal_size, histories, mu, sample_size, num_trials, record_every,
-     control_size) = task
+     control_size, simulate) = task
     wright_fisher.set_seed(seed)
     results = compare_histories(normal_size, histories, mu, sample_size, num_trials,
-                                record_every, control_size=control_size)
+                                record_every, control_size=control_size, simulate=simulate)
     return {label: result["recovery"] for label, result in results.items()}
 
 
@@ -261,7 +268,8 @@ def _times_table(recoveries: list[dict], labels: list) -> dict[str, np.ndarray]:
 def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
                               sample_size: int, num_trials: int, record_every: int,
                               seeds: list[int], control_size: int | None = None,
-                              workers: int | None = None) -> dict[str, np.ndarray]:
+                              workers: int | None = None,
+                              simulate=None) -> dict[str, np.ndarray]:
     """
     Measures recovery times for several events, repeating the whole experiment
     with several random seeds to show how much the times vary.
@@ -274,6 +282,7 @@ def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
     - control_size (int | None): As in compare_histories.
     - workers (int | None): How many processes run seeds at once (see
       run_in_parallel). The results do not depend on it.
+    - simulate: As in compare_histories.
     Returns:
     - dict[str, np.ndarray]: For each of "S", "pi", "theta_w" and "D", an array with
       one row per seed and one column per history (in the order of histories),
@@ -281,7 +290,7 @@ def recovery_times_over_seeds(normal_size: int, histories: dict, mu: float,
       it had not recovered by the end.
     """
     tasks = [(seed, normal_size, histories, mu, sample_size, num_trials, record_every,
-              control_size) for seed in seeds]
+              control_size, simulate) for seed in seeds]
     return _times_table(run_in_parallel(_recovery_for_seed, tasks, workers), list(histories))
 
 
@@ -317,7 +326,7 @@ def growth_recovery_times(start_size: int, end_sizes: list[int], gens_growth: in
                                                     gens_growth=gens_growth,
                                                     gens_after=total_gens[end_size] - gens_growth)
         tasks += [(seed, start_size, {end_size: history}, mu, sample_size, num_trials,
-                   record_every[end_size], end_size) for seed in seeds]
+                   record_every[end_size], end_size, None) for seed in seeds]
     recoveries = run_in_parallel(_recovery_for_seed, tasks, workers)
 
     columns = []

@@ -65,6 +65,7 @@ import numpy as np
 
 import wright_fisher
 from diversity import sample_stats_per_trial
+from linkage import linked_sample_stats
 from recovery import run_in_parallel
 
 STATS = ["pi", "S", "singletons"]
@@ -111,16 +112,17 @@ def _simulate_history(task: tuple) -> dict[str, np.ndarray]:
     """
     Simulates one history of the reference table (run by run_in_parallel).
     Parameters:
-    - task (tuple): seed, normal_size, sizes, mu, sample_size, num_trials, times.
+    - task (tuple): seed, normal_size, sizes, mu, sample_size, num_trials, times, linked.
     Returns:
     - dict[str, np.ndarray]: For each statistic in STATS, one row per population
       and one column per time.
     """
-    seed, normal_size, sizes, mu, sample_size, num_trials, times = task
+    seed, normal_size, sizes, mu, sample_size, num_trials, times, linked = task
     wright_fisher.set_seed(seed)
     burn_in = [normal_size] * (10 * normal_size)
-    stats = sample_stats_per_trial(burn_in + sizes, mu, sample_size, num_trials,
-                                   [len(burn_in) + t for t in times])
+    simulate = linked_sample_stats if linked else sample_stats_per_trial
+    stats = simulate(burn_in + sizes, mu, sample_size, num_trials,
+                     [len(burn_in) + t for t in times])
     return {name: stats[name] for name in STATS}
 
 
@@ -130,7 +132,8 @@ def build_reference_table(normal_size: int = 200, mu: float = 0.0125, sample_siz
                           growth_sizes: tuple = (400, 1000, 2000, 4000),
                           growth_length: int = 20, max_time: int = 1000,
                           record_every: int = 10, num_trials: int = 200, seed: int = 1,
-                          workers: int | None = None) -> dict[str, np.ndarray]:
+                          workers: int | None = None,
+                          linked: bool = False) -> dict[str, np.ndarray]:
     """
     Simulates every history in the grid and records one sample per population at
     every recorded time.
@@ -146,6 +149,8 @@ def build_reference_table(normal_size: int = 200, mu: float = 0.0125, sample_siz
     - num_trials (int): Populations simulated per history.
     - seed (int): History h uses seed + h, so the table is reproducible.
     - workers (int | None): As in run_in_parallel.
+    - linked (bool): Simulate completely linked sites (linkage.linked_sample_stats)
+      instead of independent ones. Each recorded time then has its own family tree.
     Returns:
     - dict[str, np.ndarray]: One entry per row for "kind" (index into KINDS),
       "crash_size", "crash_length", "end_size", "time" (generations since the event
@@ -160,8 +165,8 @@ def build_reference_table(normal_size: int = 200, mu: float = 0.0125, sample_siz
     histories = make_histories(normal_size, list(crash_sizes), list(crash_lengths),
                                list(growth_sizes), growth_length, max_time)
     times = list(range(0, max_time + 1, record_every))
-    tasks = [(seed + h, normal_size, history["sizes"], mu, sample_size, num_trials, times)
-             for h, history in enumerate(histories)]
+    tasks = [(seed + h, normal_size, history["sizes"], mu, sample_size, num_trials, times,
+              linked) for h, history in enumerate(histories)]
     results = run_in_parallel(_simulate_history, tasks, workers)
 
     rows_per_history = num_trials * len(times)
@@ -194,6 +199,9 @@ def cached_reference_table(**kwargs) -> dict[str, np.ndarray]:
     settings = inspect.signature(build_reference_table).bind(**kwargs)
     settings.apply_defaults()
     settings = {name: value for name, value in settings.arguments.items() if name != "workers"}
+    # Leave linked out of the name when False, so tables saved before it existed still load.
+    if not settings["linked"]:
+        del settings["linked"]
     key = "_".join(f"{name}-{settings[name]}" for name in sorted(settings))
     key = key.replace(" ", "").replace("(", "").replace(")", "").replace(",", "-")
     path = os.path.join(CACHE_DIR, f"table_{key}.npz")
@@ -350,7 +358,7 @@ def observe(sizes: list[int], normal_size: int, mu: float, sample_size: int,
 
 
 def validate(table: dict[str, np.ndarray], num_tests: int = 1000, num_keep: int = 500,
-             seed: int = 0) -> dict[str, np.ndarray]:
+             seed: int = 0, tests: dict[str, np.ndarray] | None = None) -> dict[str, np.ndarray]:
     """
     Tests the inference on rows of the table whose history is known. Every row from
     the tested population is removed first, so no near-copy of the test is left.
@@ -359,6 +367,9 @@ def validate(table: dict[str, np.ndarray], num_tests: int = 1000, num_keep: int 
     - num_tests (int): How many rows to test.
     - num_keep (int): As in infer.
     - seed (int): Chooses the test rows.
+    - tests (dict | None): A second table to take the test rows from, for example one
+      simulated under a different model than the reference table. Its populations
+      are separate from the reference table's, so nothing is removed. Defaults to table.
     Returns:
     - dict[str, np.ndarray]: One entry per test: the true "kind", "time", "strength"
       (nan unless a crash) and "end_size" (0 unless growth), the most probable kind
@@ -367,27 +378,28 @@ def validate(table: dict[str, np.ndarray], num_tests: int = 1000, num_keep: int 
       "end_size_estimate" and whether the truth was in the 90% range
       ("strength_covered", "time_covered").
     """
+    source = table if tests is None else tests
     rng = np.random.default_rng(seed)
     # Equal numbers of steady, crash and growth tests.
-    tests = np.concatenate([rng.choice(np.flatnonzero(table["kind"] == k),
-                                       num_tests // len(KINDS), replace=False)
-                            for k in range(len(KINDS))])
+    rows = np.concatenate([rng.choice(np.flatnonzero(source["kind"] == k),
+                                      num_tests // len(KINDS), replace=False)
+                           for k in range(len(KINDS))])
     names = ["kind", "guess", "p_true", "time", "strength", "end_size", "strength_estimate",
              "time_estimate", "end_size_estimate", "strength_covered", "time_covered"]
-    results = {name: np.full(len(tests), np.nan) for name in names}
-    for i, row in enumerate(tests):
-        observed = {name: table[name][row] for name in STATS}
-        summary = summarize(infer(observed, table, num_keep,
-                                  exclude=table["population"] == table["population"][row]))
-        kind = KINDS[table["kind"][row]]
+    results = {name: np.full(len(rows), np.nan) for name in names}
+    for i, row in enumerate(rows):
+        observed = {name: source[name][row] for name in STATS}
+        exclude = None if tests is not None else table["population"] == table["population"][row]
+        summary = summarize(infer(observed, table, num_keep, exclude=exclude))
+        kind = KINDS[source["kind"][row]]
         probabilities = summary["probability"]
-        results["kind"][i] = table["kind"][row]
+        results["kind"][i] = source["kind"][row]
         results["guess"][i] = KINDS.index(max(probabilities, key=probabilities.get))
         results["p_true"][i] = probabilities[kind]
-        results["time"][i] = table["time"][row]
-        results["end_size"][i] = table["end_size"][row]
+        results["time"][i] = source["time"][row]
+        results["end_size"][i] = source["end_size"][row]
         if kind == "crash":
-            strength = table["crash_length"][row] / (2 * table["crash_size"][row])
+            strength = source["crash_length"][row] / (2 * source["crash_size"][row])
             results["strength"][i] = strength
             if "crash" in summary:
                 low, median, high = summary["crash"]["strength"]
@@ -396,10 +408,32 @@ def validate(table: dict[str, np.ndarray], num_tests: int = 1000, num_keep: int 
         if kind in ("crash", "growth") and kind in summary:
             low, median, high = summary[kind]["time"]
             results["time_estimate"][i] = median
-            results["time_covered"][i] = low <= table["time"][row] <= high
+            results["time_covered"][i] = low <= source["time"][row] <= high
             if kind == "growth":
                 results["end_size_estimate"][i] = summary["growth"]["end_size"][1]
     return results
+
+
+def validation_rates(results: dict[str, np.ndarray]) -> dict[str, float]:
+    """
+    Picks the headline numbers out of validate's results.
+    Parameters:
+    - results (dict): The output of validate.
+    Returns:
+    - dict[str, float]: Shares from 0 to 1: "steady", "crash" and "growth" (the right
+      kind was most probable), "severe_early" (severe crashes, strength above 1,
+      in the first 300 generations, called crashes), "strength_covered",
+      "crash_time_covered" and "growth_time_covered" (the truth was inside the 90% range).
+    """
+    rates = {kind: float(np.mean(results["guess"][results["kind"] == k] == k))
+             for k, kind in enumerate(KINDS)}
+    severe = (results["kind"] == 1) & (results["strength"] > 1) & (results["time"] < 300)
+    rates["severe_early"] = float(np.mean(results["guess"][severe] == 1))
+    crash = results["kind"] == 1
+    rates["strength_covered"] = float(np.nanmean(results["strength_covered"][crash]))
+    rates["crash_time_covered"] = float(np.nanmean(results["time_covered"][crash]))
+    rates["growth_time_covered"] = float(np.nanmean(results["time_covered"][results["kind"] == 2]))
+    return rates
 
 
 def describe_validation(results: dict[str, np.ndarray]) -> str:
